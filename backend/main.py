@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 import numpy as np
+import cv2
 
 # Absolute pathing for robustness
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
