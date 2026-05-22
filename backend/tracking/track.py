@@ -43,6 +43,9 @@ def run_tracking_pipeline(
     # Initialize YOLOv8 Model
     model = get_yolo_model()
     
+    # Resolve absolute path to custom bytetrack configuration
+    tracker_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_bytetrack.yaml")
+    
     # State tracking: mapping of tracker_id to Kalman Filter
     kalman_filters: Dict[int, KalmanFilter2D] = {}
     # State tracking: mapping of tracker_id to PlayerStatsTracker
@@ -57,13 +60,14 @@ def run_tracking_pipeline(
         if not success:
             break
             
-        # Run tracking using ByteTrack
-        # We specify persist=True to keep tracks across frames, classes=[0] to track persons only
+        # Run tracking using optimized ByteTrack with lowered confidence to allow full secondary associations
         results = model.track(
             source=frame,
-            tracker="bytetrack.yaml",
+            tracker=tracker_config,
             persist=True,
             classes=[0],
+            conf=0.10,   # Lower conf threshold to pass weaker detections into tracker for association
+            iou=0.60,    # NMS overlap threshold to prevent duplicate tracks on overlapping players
             verbose=False
         )
         

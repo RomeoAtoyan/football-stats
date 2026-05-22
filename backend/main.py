@@ -246,4 +246,4 @@ def export_results():
     match_json = os.path.join(EXPORT_DIR, "match.json")
     if not os.path.exists(match_json):
         raise HTTPException(status_code=404, detail="No exported results available.")
-    return {"exportPath": match_json}
+    return {"exportPath": match_json} # Trigger reload after package upgrade
