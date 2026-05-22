@@ -37,6 +37,7 @@ app.add_middleware(
 
 # Mount static files for frames and overlays
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 # Global tracking process state (for status checking)
 processing_status = {

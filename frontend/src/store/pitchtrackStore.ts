@@ -119,6 +119,24 @@ const initialMarkers: CalibrationMarker[] = [
   { id: 'goal_rb', label: 'Right Goal - Bottom Post', section: 'RIGHT', description: 'Right yellow goalpost on the ground line (closer to camera)', real: [30, 9.5], pixel: null },
 ];
 
+const loadPersistedMarkers = (): CalibrationMarker[] => {
+  try {
+    const saved = localStorage.getItem('pitchtrack_markers');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return initialMarkers.map(initial => {
+          const match = parsed.find((m: any) => m.id === initial.id);
+          return match ? { ...initial, pixel: match.pixel } : initial;
+        });
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load persisted markers:', e);
+  }
+  return initialMarkers;
+};
+
 export const usePitchTrackStore = create<PitchTrackState>((set) => ({
   // Navigation
   currentView: 'upload',
@@ -128,7 +146,7 @@ export const usePitchTrackStore = create<PitchTrackState>((set) => ({
   isUploading: false,
   
   // Calibration State
-  markers: initialMarkers,
+  markers: loadPersistedMarkers(),
   activeMarkerId: 'corner_tr', // Start with the visible top-right corner
   gridOverlayUrl: null,
   isCalibrating: false,
@@ -151,21 +169,40 @@ export const usePitchTrackStore = create<PitchTrackState>((set) => ({
   setUploading: (val) => set({ isUploading: val }),
   
   // Calibration Actions
-  setMarkerPixel: (id, pixel) => set((state) => ({
-    markers: state.markers.map(m => m.id === id ? { ...m, pixel } : m)
-  })),
+  setMarkerPixel: (id, pixel) => set((state) => {
+    const updatedMarkers = state.markers.map(m => m.id === id ? { ...m, pixel } : m);
+    try {
+      localStorage.setItem('pitchtrack_markers', JSON.stringify(updatedMarkers));
+    } catch (e) {
+      console.error('Failed to save markers to localStorage:', e);
+    }
+    return { markers: updatedMarkers };
+  }),
   
-  updateMarkerReal: (id, real) => set((state) => ({
-    markers: state.markers.map(m => m.id === id ? { ...m, real } : m)
-  })),
+  updateMarkerReal: (id, real) => set((state) => {
+    const updatedMarkers = state.markers.map(m => m.id === id ? { ...m, real } : m);
+    try {
+      localStorage.setItem('pitchtrack_markers', JSON.stringify(updatedMarkers));
+    } catch (e) {
+      console.error('Failed to save markers to localStorage:', e);
+    }
+    return { markers: updatedMarkers };
+  }),
   
   setActiveMarkerId: (id) => set({ activeMarkerId: id }),
   
-  resetCalibration: () => set({ 
-    markers: initialMarkers.map(m => ({ ...m, pixel: null })),
-    activeMarkerId: 'corner_tr',
-    gridOverlayUrl: null
-  }),
+  resetCalibration: () => {
+    try {
+      localStorage.removeItem('pitchtrack_markers');
+    } catch (e) {
+      console.error('Failed to remove markers from localStorage:', e);
+    }
+    set({ 
+      markers: initialMarkers.map(m => ({ ...m, pixel: null })),
+      activeMarkerId: 'corner_tr',
+      gridOverlayUrl: null
+    });
+  },
   
   setGridOverlayUrl: (url) => set({ gridOverlayUrl: url }),
   setCalibrating: (val) => set({ isCalibrating: val }),

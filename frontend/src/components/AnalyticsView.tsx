@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import ReactPlayer from 'react-player';
 import { usePitchTrackStore } from '../store/pitchtrackStore';
 import type { FrameDetection, PlayerSummary } from '../store/pitchtrackStore';
 import { 
@@ -29,9 +28,46 @@ export const AnalyticsView: React.FC = () => {
     setView
   } = usePitchTrackStore();
 
-  const playerRef = useRef<ReactPlayer>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const miniFieldRef = useRef<HTMLCanvasElement>(null);
+
+  // Synchronize playing state with native video play/pause
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (isPlaying) {
+      video.play().catch((err) => {
+        console.error("Video play failed:", err);
+      });
+    } else {
+      video.pause();
+    }
+  }, [isPlaying]);
+
+  // Synchronize playbackSpeed changes
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.playbackRate = playbackSpeed;
+    }
+  }, [playbackSpeed]);
+
+  // Reset play button state when video ends
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const handleEnded = () => {
+      setPlaying(false);
+    };
+
+    video.addEventListener('ended', handleEnded);
+    return () => {
+      video.removeEventListener('ended', handleEnded);
+    };
+  }, [setPlaying]);
   
   const [playedSeconds, setPlayedSeconds] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
@@ -293,20 +329,31 @@ export const AnalyticsView: React.FC = () => {
   }, [currentFrame, results, selectedPlayerId]);
 
   // 4. Synced Player playback tick handler
-  const handleProgress = (state: { playedSeconds: number; played: number }) => {
-    setPlayedSeconds(state.playedSeconds);
+  const handleTimeUpdate = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    setPlayedSeconds(video.currentTime);
     if (videoMetadata) {
       // Synchronize video elapsed seconds to the corresponding frame index
-      const computedFrame = Math.round(state.playedSeconds * videoMetadata.fps);
+      const computedFrame = Math.round(video.currentTime * videoMetadata.fps);
       const boundedFrame = Math.min(videoMetadata.totalFrames - 1, Math.max(0, computedFrame));
       setCurrentFrame(boundedFrame);
+    }
+  };
+
+  const handleLoadedMetadata = () => {
+    const video = videoRef.current;
+    if (video) {
+      setDuration(video.duration);
     }
   };
 
   const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const time = parseFloat(e.target.value);
     setPlayedSeconds(time);
-    playerRef.current?.seekTo(time);
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
+    }
     
     if (videoMetadata) {
       const computedFrame = Math.round(time * videoMetadata.fps);
@@ -417,18 +464,15 @@ export const AnalyticsView: React.FC = () => {
             {/* Primary Video Canvas - Spans 2 cols */}
             <div className="lg:col-span-2 space-y-4">
               <div className="relative aspect-video rounded-2xl overflow-hidden border border-gray-800 shadow-2xl bg-black">
-                {/* React Player */}
-                <ReactPlayer
-                  ref={playerRef}
-                  url="http://localhost:8000/static/uploaded_match.mp4"
-                  width="100%"
-                  height="100%"
-                  playing={isPlaying}
-                  controls={false}
+                {/* Native HTML5 Video Player */}
+                <video
+                  ref={videoRef}
+                  src="http://localhost:8000/uploads/uploaded_match.mp4"
+                  className="w-full h-full object-contain"
+                  playsInline
                   muted={isMuted}
-                  progressInterval={30}
-                  onProgress={handleProgress}
-                  onDuration={(d) => setDuration(d)}
+                  onTimeUpdate={handleTimeUpdate}
+                  onLoadedMetadata={handleLoadedMetadata}
                 />
 
                 {/* Overlaid Canvas */}
@@ -484,10 +528,6 @@ export const AnalyticsView: React.FC = () => {
                         key={spd}
                         onClick={() => {
                           setPlaybackSpeed(spd);
-                          if (playerRef.current) {
-                            // React Player doesn't directly support reactive playback speed without prop, so let's adjust it
-                            (playerRef.current.getInternalPlayer() as HTMLVideoElement).playbackRate = spd;
-                          }
                         }}
                         className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
                           playbackSpeed === spd 
