@@ -534,9 +534,9 @@ export const CalibrationView: React.FC = () => {
                 <circle cx="60" cy="80" r="2" fill="#4b5563" />
                 <circle cx="240" cy="80" r="2" fill="#4b5563" />
                 
-                {/* Penalty Boxes */}
-                <path d="M 0 30 L 60 30 L 60 130 L 0 130" fill="none" stroke="#374151" strokeWidth="1.5" />
-                <path d="M 300 30 L 240 30 L 240 130 L 300 130" fill="none" stroke="#374151" strokeWidth="1.5" />
+                {/* Penalty Curved D-Arcs */}
+                <path d="M 0 20 A 60 60 0 0 1 0 140" fill="none" stroke="#374151" strokeWidth="1.5" />
+                <path d="M 300 140 A 60 60 0 0 1 300 20" fill="none" stroke="#374151" strokeWidth="1.5" />
                 
                 {/* Goals */}
                 <rect x="-8" y="65" width="8" height="30" fill="none" stroke="#eab308" strokeWidth="1.5" rx="1" />

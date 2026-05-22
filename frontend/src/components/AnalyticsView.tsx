@@ -257,9 +257,19 @@ export const AnalyticsView: React.FC = () => {
     ctx.arc(fWidth / 2, fHeight / 2, 4, 0, 2 * Math.PI);
     ctx.fill();
 
-    // Left and Right penalty boxes (6m box)
-    ctx.strokeRect(0, 3 * scaleY, 6 * scaleX, 10 * scaleY);
-    ctx.strokeRect(fWidth - 6 * scaleX, 3 * scaleY, 6 * scaleX, 10 * scaleY);
+    // Left and Right penalty curved "D" boxes (6m semi-circular arcs matching standard 5-a-side / MATCHi pitches)
+    ctx.strokeStyle = '#40916c';
+    ctx.lineWidth = 3;
+    
+    // Left Penalty Arc (semi-circle from -Math.PI / 2 to Math.PI / 2)
+    ctx.beginPath();
+    ctx.arc(0, fHeight / 2, 6 * scaleY, -Math.PI / 2, Math.PI / 2);
+    ctx.stroke();
+
+    // Right Penalty Arc (semi-circle from Math.PI / 2 to 1.5 * Math.PI)
+    ctx.beginPath();
+    ctx.arc(fWidth, fHeight / 2, 6 * scaleY, Math.PI / 2, 1.5 * Math.PI);
+    ctx.stroke();
 
     // Left and Right penalty spots
     ctx.beginPath();
