@@ -1,6 +1,70 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { usePitchTrackStore } from '../store/pitchtrackStore';
-import { Play, Download, User, Activity, Layers, RefreshCw, Eye, EyeOff } from 'lucide-react';
+import { Play, Download, User, Activity, Layers, RefreshCw, Eye, EyeOff, Grid } from 'lucide-react';
+
+const pitchSegments = [
+  // Outer boundary outline
+  { rx1: 0, ry1: 0, rx2: 30, ry2: 0 },
+  { rx1: 0, ry1: 16, rx2: 30, ry2: 16 },
+  { rx1: 0, ry1: 0, rx2: 0, ry2: 16 },
+  { rx1: 30, ry1: 0, rx2: 30, ry2: 16 },
+
+  // Center line
+  { rx1: 15, ry1: 0, rx2: 15, ry2: 16 },
+
+  // Left Penalty Box
+  { rx1: 0, ry1: 3.2, rx2: 4.5, ry2: 3.2 },
+  { rx1: 4.5, ry1: 3.2, rx2: 4.5, ry2: 12.8 },
+  { rx1: 4.5, ry1: 12.8, rx2: 0, ry2: 12.8 },
+
+  // Right Penalty Box
+  { rx1: 30, ry1: 3.2, rx2: 25.5, ry2: 3.2 },
+  { rx1: 25.5, ry1: 3.2, rx2: 25.5, ry2: 12.8 },
+  { rx1: 25.5, ry1: 12.8, rx2: 30, ry2: 12.8 },
+
+  // Left Goal posts
+  { rx1: 0, ry1: 6.5, rx2: 0, ry2: 9.5 },
+  // Right Goal posts
+  { rx1: 30, ry1: 6.5, rx2: 30, ry2: 9.5 }
+];
+
+// Helper to compute inverse of a 3x3 matrix in plain JS
+const invert3x3 = (m: number[][]): number[][] | null => {
+  const a = m[0][0], b = m[0][1], c = m[0][2];
+  const d = m[1][0], e = m[1][1], f = m[1][2];
+  const g = m[2][0], h = m[2][1], i = m[2][2];
+
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(det) < 1e-12) return null;
+
+  const invDet = 1.0 / det;
+  return [
+    [
+      (e * i - f * h) * invDet,
+      (c * h - b * i) * invDet,
+      (b * f - c * e) * invDet
+    ],
+    [
+      (f * g - d * i) * invDet,
+      (a * i - c * g) * invDet,
+      (c * d - a * f) * invDet
+    ],
+    [
+      (d * h - e * g) * invDet,
+      (b * g - a * h) * invDet,
+      (a * e - b * d) * invDet
+    ]
+  ];
+};
+
+// Project point using inverse homography
+const projectPoint = (rx: number, ry: number, H_inv: number[][]): [number, number] | null => {
+  const x = H_inv[0][0] * rx + H_inv[0][1] * ry + H_inv[0][2];
+  const y = H_inv[1][0] * rx + H_inv[1][1] * ry + H_inv[1][2];
+  const w = H_inv[2][0] * rx + H_inv[2][1] * ry + H_inv[2][2];
+  if (Math.abs(w) < 1e-12) return null;
+  return [x / w, y / w];
+};
 
 export const DashboardView: React.FC = () => {
   const { results, selectedPlayerId, setSelectedPlayerId, resetAll } = usePitchTrackStore();
@@ -8,6 +72,28 @@ export const DashboardView: React.FC = () => {
   const [currentFrame, setCurrentFrame] = useState(0);
   const [showTeamA, setShowTeamA] = useState(true);
   const [showTeamB, setShowTeamB] = useState(true);
+
+  // Perspective Grid Overlay state
+  const [showGridOverlay, setShowGridOverlay] = useState(false);
+  const [currentHomography, setCurrentHomography] = useState<number[][] | null>(null);
+
+  // Fetch active homography on mount
+  useEffect(() => {
+    const fetchCalibration = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/calibration');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.homography) {
+            setCurrentHomography(data.homography);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch calibration for dashboard grid overlay:', err);
+      }
+    };
+    fetchCalibration();
+  }, []);
   
   if (!results) return null;
 
@@ -22,6 +108,7 @@ export const DashboardView: React.FC = () => {
   const teamBPlayers = results.players.filter(p => p.team === 'B');
 
   const selectedPlayer = results.players.find(p => p.id === selectedPlayerId);
+  const H_inv = currentHomography ? invert3x3(currentHomography) : null;
 
   // Render the miniature tactical pitch canvas overlay showing player trajectory
   useEffect(() => {
@@ -188,6 +275,7 @@ export const DashboardView: React.FC = () => {
               onTimeUpdate={handleTimeUpdate}
               className="w-full h-auto block object-fill"
             />
+            
             {/* Interactive Player Bounding Boxes Overlay */}
             <div className="absolute inset-0 pointer-events-none overflow-hidden">
               {(results.frames[String(currentFrame)] || results.frames[currentFrame] || []).map((det) => {
@@ -245,6 +333,73 @@ export const DashboardView: React.FC = () => {
                 );
               })}
             </div>
+
+            {/* Projected Warped Calibration Grid Overlay (Draws inside video container) */}
+            {showGridOverlay && H_inv && (
+              <svg 
+                className="absolute inset-0 w-full h-full pointer-events-none z-10"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+              >
+                {/* Warped Pitch Lines */}
+                {pitchSegments.map((seg, sIdx) => {
+                  const pt1 = projectPoint(seg.rx1, seg.ry1, H_inv);
+                  const pt2 = projectPoint(seg.rx2, seg.ry2, H_inv);
+                  if (!pt1 || !pt2) return null;
+                  
+                  const x1 = (pt1[0] / results.metadata.width) * 100;
+                  const y1 = (pt1[1] / results.metadata.height) * 100;
+                  const x2 = (pt2[0] / results.metadata.width) * 100;
+                  const y2 = (pt2[1] / results.metadata.height) * 100;
+
+                  return (
+                    <line
+                      key={sIdx}
+                      x1={`${x1}%`}
+                      y1={`${y1}%`}
+                      x2={`${x2}%`}
+                      y2={`${y2}%`}
+                      stroke="#10b981"
+                      strokeWidth="0.45"
+                      strokeDasharray="1.2,1.2"
+                      className="opacity-90"
+                    />
+                  );
+                })}
+
+                {/* Warped Center Circle approximated as 36-segment polygon */}
+                {(() => {
+                  const cx = 15.0;
+                  const cy = 8.0;
+                  const r = 3.5;
+                  const points: [number, number][] = [];
+                  for (let i = 0; i <= 36; i++) {
+                    const theta = (i / 36) * Math.PI * 2;
+                    const rx = cx + r * Math.cos(theta);
+                    const ry = cy + r * Math.sin(theta);
+                    const projected = projectPoint(rx, ry, H_inv);
+                    if (projected) {
+                      const sx = (projected[0] / results.metadata.width) * 100;
+                      const sy = (projected[1] / results.metadata.height) * 100;
+                      points.push([sx, sy]);
+                    }
+                  }
+                  if (points.length < 3) return null;
+                  const pointsStr = points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+                  return (
+                    <polygon
+                      points={pointsStr}
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth="0.45"
+                      strokeDasharray="1.2,1.2"
+                      className="opacity-90"
+                    />
+                  );
+                })()}
+              </svg>
+            )}
+
             {/* Corner glowing tag */}
             <div className="absolute top-4 left-4 pointer-events-none flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-black/60 border border-white/5 backdrop-blur-md">
               <Play className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
@@ -252,6 +407,23 @@ export const DashboardView: React.FC = () => {
                 ANNOTATED MATCH STREAM
               </span>
             </div>
+
+            {/* Grid Overlay Toggle Button (Top-Right Floating Corner) */}
+            {currentHomography && (
+              <button
+                onClick={() => setShowGridOverlay(!showGridOverlay)}
+                className={`absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-[10.5px] cursor-pointer transition-all shadow-lg pointer-events-auto select-none ${
+                  showGridOverlay
+                    ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-400 text-white shadow-[0_0_12px_rgba(16,185,129,0.35)]'
+                    : 'bg-black/65 hover:bg-black/85 border-white/5 text-gray-300 hover:text-white'
+                }`}
+                title="Toggle Warped Perspective Field Grid Overlay"
+              >
+                <Grid className="w-3.5 h-3.5" />
+                Grid Overlay: {showGridOverlay ? 'ON' : 'OFF'}
+              </button>
+            )}
+
             {/* Download Output video button */}
             <a
               href="http://localhost:8000/static/output_video.mp4"

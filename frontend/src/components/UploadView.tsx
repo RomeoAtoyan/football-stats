@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { usePitchTrackStore } from '../store/pitchtrackStore';
 import { 
   Upload, Film, ArrowRight, Loader2, Check, RotateCcw, 
-  Crosshair, Settings, ZoomIn, ZoomOut, Move, Hand, Info, Trash2, X
+  Crosshair, Settings, ZoomIn, ZoomOut, Move, Hand, Info, Trash2, X, Grid
 } from 'lucide-react';
 
 interface CalibrationPointData {
@@ -27,6 +27,70 @@ const landmarks = [
   { id: 'right_top_corner', name: 'Right-Top Corner (30m, 0m)', real: [30.0, 0.0] as [number, number] },
   { id: 'right_bottom_corner', name: 'Right-Bottom Corner (30m, 16m)', real: [30.0, 16.0] as [number, number] }
 ];
+
+const pitchSegments = [
+  // Outer boundary outline
+  { rx1: 0, ry1: 0, rx2: 30, ry2: 0 },
+  { rx1: 0, ry1: 16, rx2: 30, ry2: 16 },
+  { rx1: 0, ry1: 0, rx2: 0, ry2: 16 },
+  { rx1: 30, ry1: 0, rx2: 30, ry2: 16 },
+
+  // Center line
+  { rx1: 15, ry1: 0, rx2: 15, ry2: 16 },
+
+  // Left Penalty Box
+  { rx1: 0, ry1: 3.2, rx2: 4.5, ry2: 3.2 },
+  { rx1: 4.5, ry1: 3.2, rx2: 4.5, ry2: 12.8 },
+  { rx1: 4.5, ry1: 12.8, rx2: 0, ry2: 12.8 },
+
+  // Right Penalty Box
+  { rx1: 30, ry1: 3.2, rx2: 25.5, ry2: 3.2 },
+  { rx1: 25.5, ry1: 3.2, rx2: 25.5, ry2: 12.8 },
+  { rx1: 25.5, ry1: 12.8, rx2: 30, ry2: 12.8 },
+
+  // Left Goal posts
+  { rx1: 0, ry1: 6.5, rx2: 0, ry2: 9.5 },
+  // Right Goal posts
+  { rx1: 30, ry1: 6.5, rx2: 30, ry2: 9.5 }
+];
+
+// Helper to compute inverse of a 3x3 matrix in plain JS
+const invert3x3 = (m: number[][]): number[][] | null => {
+  const a = m[0][0], b = m[0][1], c = m[0][2];
+  const d = m[1][0], e = m[1][1], f = m[1][2];
+  const g = m[2][0], h = m[2][1], i = m[2][2];
+
+  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  if (Math.abs(det) < 1e-12) return null;
+
+  const invDet = 1.0 / det;
+  return [
+    [
+      (e * i - f * h) * invDet,
+      (c * h - b * i) * invDet,
+      (b * f - c * e) * invDet
+    ],
+    [
+      (f * g - d * i) * invDet,
+      (a * i - c * g) * invDet,
+      (c * d - a * f) * invDet
+    ],
+    [
+      (d * h - e * g) * invDet,
+      (b * g - a * h) * invDet,
+      (a * e - b * d) * invDet
+    ]
+  ];
+};
+
+// Project point using inverse homography
+const projectPoint = (rx: number, ry: number, H_inv: number[][]): [number, number] | null => {
+  const x = H_inv[0][0] * rx + H_inv[0][1] * ry + H_inv[0][2];
+  const y = H_inv[1][0] * rx + H_inv[1][1] * ry + H_inv[1][2];
+  const w = H_inv[2][0] * rx + H_inv[2][1] * ry + H_inv[2][2];
+  if (Math.abs(w) < 1e-12) return null;
+  return [x / w, y / w];
+};
 
 export const UploadView: React.FC = () => {
   const { 
@@ -59,13 +123,56 @@ export const UploadView: React.FC = () => {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [clickStart, setClickStart] = useState({ x: 0, y: 0 });
 
-  // Tool Controls
+  // Tool Controls & Warped Grid Overlay
   const [activeTool, setActiveTool] = useState<'crosshair' | 'hand'>('crosshair');
   const [spacePressed, setSpacePressed] = useState(false);
   const [draggingPinId, setDraggingPinId] = useState<string | null>(null);
+  const [showGridOverlay, setShowGridOverlay] = useState(false);
+  const [currentHomography, setCurrentHomography] = useState<number[][] | null>(null);
 
   const activeLandmark = landmarks.find(l => l.id === selectedLandmarkId) || landmarks[0];
   const effectiveTool = spacePressed ? 'hand' : activeTool;
+
+  // Load existing calibration from backend
+  useEffect(() => {
+    if (!videoMetadata) return;
+
+    const fetchCalibration = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/calibration');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.homography) {
+            setCurrentHomography(data.homography);
+            setCalibrated(data.status === 'custom');
+            
+            // Map existing points to the calibration state if custom calibration is present
+            if (data.status === 'custom' && data.points) {
+              const loadedPoints: Record<string, CalibrationPointData> = {};
+              data.points.forEach((pt: any) => {
+                const landmark = landmarks.find(l => l.real[0] === pt.real[0] && l.real[1] === pt.real[1]);
+                if (landmark) {
+                  const screenX = (pt.pixel[0] / videoMetadata.width) * 100;
+                  const screenY = (pt.pixel[1] / videoMetadata.height) * 100;
+                  loadedPoints[landmark.id] = {
+                    screenX,
+                    screenY,
+                    pixel: pt.pixel,
+                    real: pt.real
+                  };
+                }
+              });
+              setCalibrationPoints(loadedPoints);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load existing camera calibration:', err);
+      }
+    };
+
+    fetchCalibration();
+  }, [videoMetadata]);
 
   // Keyboard Spacebar Pan Hold Shortcut
   useEffect(() => {
@@ -128,6 +235,8 @@ export const UploadView: React.FC = () => {
     setCalibrated(false);
     setIsCalibratingMode(false);
     setCalibrationPoints({});
+    setShowGridOverlay(false);
+    setCurrentHomography(null);
     setZoom(1);
     setPanX(0);
     setPanY(0);
@@ -229,6 +338,27 @@ export const UploadView: React.FC = () => {
     }
   };
 
+  // Recalculate live homography matrix in background
+  const recalculateLiveHomography = async (pointsOverride?: Record<string, CalibrationPointData>) => {
+    const pts = pointsOverride || calibrationPoints;
+    const pointsData = Object.values(pts);
+    if (pointsData.length < 4) return;
+    
+    try {
+      const response = await fetch('http://localhost:8000/api/calibrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ points: pointsData })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentHomography(data.homography);
+      }
+    } catch (err) {
+      console.error("Failed to update live homography overlay:", err);
+    }
+  };
+
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!isCalibratingMode) return;
 
@@ -272,6 +402,10 @@ export const UploadView: React.FC = () => {
 
     if (draggingPinId) {
       setDraggingPinId(null);
+      // Automatically update live calibration grid overlay if enabled
+      if (showGridOverlay) {
+        recalculateLiveHomography();
+      }
       return;
     }
 
@@ -301,17 +435,22 @@ export const UploadView: React.FC = () => {
         const actualX = (screenX / 100) * videoMetadata.width;
         const actualY = (screenY / 100) * videoMetadata.height;
 
-        setCalibrationPoints(prev => ({
-          ...prev,
-          [selectedLandmarkId]: {
-            screenX,
-            screenY,
-            pixel: [actualX, actualY],
-            real: activeLandmark.real
+        setCalibrationPoints(prev => {
+          const updated = {
+            ...prev,
+            [selectedLandmarkId]: {
+              screenX,
+              screenY,
+              pixel: [actualX, actualY],
+              real: activeLandmark.real
+            }
+          };
+          // Recalculate overlay on active new pin drop if grid is turned on
+          if (showGridOverlay && Object.keys(updated).length >= 4) {
+            recalculateLiveHomography(updated);
           }
-        }));
-        
-        // Removed auto-advance logic as per user request to allow manual free-form selection
+          return updated;
+        });
       }
     }
   };
@@ -340,8 +479,11 @@ export const UploadView: React.FC = () => {
         throw new Error(errData.detail || 'Calibration failed.');
       }
       
+      const data = await response.json();
+      setCurrentHomography(data.homography);
       setCalibrated(true);
       setIsCalibratingMode(false);
+      setShowGridOverlay(false);
       setZoom(1);
       setPanX(0);
       setPanY(0);
@@ -377,6 +519,7 @@ export const UploadView: React.FC = () => {
   };
 
   const calibratedCount = Object.keys(calibrationPoints).length;
+  const H_inv = currentHomography ? invert3x3(currentHomography) : null;
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[75vh] px-6 py-12 max-w-6xl mx-auto w-full">
@@ -514,6 +657,72 @@ export const UploadView: React.FC = () => {
                       </div>
                     );
                   })}
+
+                  {/* Projected Warped Calibration Grid Overlay (Draws inside zoomed space) */}
+                  {isCalibratingMode && showGridOverlay && H_inv && (
+                    <svg 
+                      className="absolute inset-0 w-full h-full pointer-events-none z-10"
+                      viewBox="0 0 100 100"
+                      preserveAspectRatio="none"
+                    >
+                      {/* Warped Pitch Lines */}
+                      {pitchSegments.map((seg, sIdx) => {
+                        const pt1 = projectPoint(seg.rx1, seg.ry1, H_inv);
+                        const pt2 = projectPoint(seg.rx2, seg.ry2, H_inv);
+                        if (!pt1 || !pt2) return null;
+                        
+                        const x1 = (pt1[0] / videoMetadata.width) * 100;
+                        const y1 = (pt1[1] / videoMetadata.height) * 100;
+                        const x2 = (pt2[0] / videoMetadata.width) * 100;
+                        const y2 = (pt2[1] / videoMetadata.height) * 100;
+
+                        return (
+                          <line
+                            key={sIdx}
+                            x1={`${x1}%`}
+                            y1={`${y1}%`}
+                            x2={`${x2}%`}
+                            y2={`${y2}%`}
+                            stroke="#10b981"
+                            strokeWidth="0.4"
+                            strokeDasharray="1.2,1.2"
+                            className="opacity-90"
+                          />
+                        );
+                      })}
+
+                      {/* Warped Center Circle approximated as 36-segment polygon */}
+                      {(() => {
+                        const cx = 15.0;
+                        const cy = 8.0;
+                        const r = 3.5; // Center circle radius in meters
+                        const points: [number, number][] = [];
+                        for (let i = 0; i <= 36; i++) {
+                          const theta = (i / 36) * Math.PI * 2;
+                          const rx = cx + r * Math.cos(theta);
+                          const ry = cy + r * Math.sin(theta);
+                          const projected = projectPoint(rx, ry, H_inv);
+                          if (projected) {
+                            const sx = (projected[0] / videoMetadata.width) * 100;
+                            const sy = (projected[1] / videoMetadata.height) * 100;
+                            points.push([sx, sy]);
+                          }
+                        }
+                        if (points.length < 3) return null;
+                        const pointsStr = points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+                        return (
+                          <polygon
+                            points={pointsStr}
+                            fill="none"
+                            stroke="#10b981"
+                            strokeWidth="0.4"
+                            strokeDasharray="1.2,1.2"
+                            className="opacity-90"
+                          />
+                        );
+                      })()}
+                    </svg>
+                  )}
                 </div>
 
                 {/* Corner indicator overlay (Only visible in normal video preview mode) */}
@@ -550,6 +759,33 @@ export const UploadView: React.FC = () => {
                         title="Pan Canvas (Hand Tool / Hold Space)"
                       >
                         <Hand className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Live Calibration Grid Overlay Toggle (Enabled when 4+ points placed) */}
+                    <div className="flex gap-1 border-r border-gray-800 pr-1.5">
+                      <button
+                        onClick={async () => {
+                          if (showGridOverlay) {
+                            setShowGridOverlay(false);
+                          } else {
+                            if (calibratedCount < 4) {
+                              alert("Please drop at least 4 landmarks to preview the calibration grid.");
+                              return;
+                            }
+                            await recalculateLiveHomography();
+                            setShowGridOverlay(true);
+                          }
+                        }}
+                        disabled={calibratedCount < 4}
+                        className={`p-2 rounded-lg transition-all border cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                          showGridOverlay
+                            ? 'bg-emerald-950/45 border-emerald-500/40 text-emerald-450 shadow-[0_0_10px_rgba(16,185,129,0.25)]'
+                            : 'bg-transparent border-transparent text-gray-400 hover:text-white hover:bg-gray-800'
+                        }`}
+                        title="Toggle Warped Football Field Overlay (Requires 4+ points)"
+                      >
+                        <Grid className="w-4 h-4" />
                       </button>
                     </div>
 
@@ -674,6 +910,13 @@ export const UploadView: React.FC = () => {
                               setCalibrationPoints(prev => {
                                 const updated = { ...prev };
                                 delete updated[selectedLandmarkId];
+                                if (showGridOverlay) {
+                                  if (Object.keys(updated).length >= 4) {
+                                    recalculateLiveHomography(updated);
+                                  } else {
+                                    setShowGridOverlay(false);
+                                  }
+                                }
                                 return updated;
                               });
                             }}
@@ -730,6 +973,13 @@ export const UploadView: React.FC = () => {
                                         setCalibrationPoints(prev => {
                                           const updated = { ...prev };
                                           delete updated[l.id];
+                                          if (showGridOverlay) {
+                                            if (Object.keys(updated).length >= 4) {
+                                              recalculateLiveHomography(updated);
+                                            } else {
+                                              setShowGridOverlay(false);
+                                            }
+                                          }
                                           return updated;
                                         });
                                       }}
@@ -750,7 +1000,10 @@ export const UploadView: React.FC = () => {
                     <div className="space-y-3">
                       {calibratedCount > 0 && (
                         <button 
-                          onClick={() => setCalibrationPoints({})}
+                          onClick={() => {
+                            setCalibrationPoints({});
+                            setShowGridOverlay(false);
+                          }}
                           className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-xl bg-gray-850 text-gray-400 hover:text-white transition-all cursor-pointer border border-gray-800 text-[10px] font-bold font-mono active:scale-[0.98]"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
@@ -763,6 +1016,7 @@ export const UploadView: React.FC = () => {
                           onClick={() => {
                             setIsCalibratingMode(false);
                             setCalibrationPoints({});
+                            setShowGridOverlay(false);
                             setZoom(1);
                             setPanX(0);
                             setPanY(0);

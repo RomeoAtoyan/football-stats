@@ -189,6 +189,27 @@ def background_tracking_task(video_path: str, H: np.ndarray):
         processing_status["message"] = "Tracking pipeline execution failed."
         processing_status["error"] = str(e)
 
+@app.get("/api/calibration")
+def get_calibration():
+    """
+    Retrieves the current saved camera calibration (homography and clicked points).
+    """
+    calibration_file = os.path.join(BASE_DIR, "camera_calibration.json")
+    if not os.path.exists(calibration_file):
+        return {
+            "status": "default",
+            "homography": DEFAULT_HOMOGRAPHY.tolist(),
+            "points": []
+        }
+    try:
+        with open(calibration_file, "r") as f:
+            data = json.load(f)
+            data["status"] = "custom"
+            return data
+    except Exception as e:
+        logger.error(f"Failed to read camera calibration: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load camera calibration.")
+
 @app.post("/api/calibrate")
 def calibrate_camera(req: CalibrationRequest):
     """
