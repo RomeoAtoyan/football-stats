@@ -17,12 +17,12 @@ backend/*.pt
 *.pt
 
 # Uploaded raw videos / dynamic data
-backend/uploads/*
+backend/uploads/
 !backend/uploads/dummy.jpg
 
 # Generated/temporary static frames/overlays
-backend/static/first_frame.jpg
-backend/static/grid_overlay.jpg
+backend/static/
+!backend/static/players/
 
 # Generated exports
 backend/exports/
