@@ -186,7 +186,7 @@ export const CalibrationView: React.FC = () => {
   if (!videoMetadata) return null;
 
   // Handle Image Click (Plot points, completely ignores click if user was drag panning)
-  const handleImageClick = (e: React.MouseEvent<HTMLImageElement>) => {
+  const handleImageClick = (e: React.MouseEvent) => {
     if (isOverlayToggled) return; // Grid overlay is active, no editing
     if (hasDragged.current) return; // Ignore clicks that were part of a drag pan movement
 
@@ -440,50 +440,65 @@ export const CalibrationView: React.FC = () => {
                 transform: `scale(${scale}) translate(${pan.x / scale}px, ${pan.y / scale}px)`,
                 transition: isPanning ? 'none' : 'transform 0.15s ease-out',
               }}
-              className="relative aspect-video max-w-full max-h-[72vh] select-none"
+              className="relative p-12 sm:p-20 md:p-28 bg-[#090d16] rounded-3xl border-2 border-gray-800/60 shadow-3xl select-none flex items-center justify-center cursor-crosshair overflow-visible group"
+              onClick={handleImageClick}
             >
-              <img
-                ref={imgRef}
-                src={isOverlayToggled && gridOverlayUrl ? gridOverlayUrl : videoMetadata.firstFrameUrl}
-                alt="Calibration View"
-                onLoad={handleImageLoad}
-                onClick={handleImageClick}
-                draggable={false}
-                className="w-full h-full object-contain rounded-xl border border-gray-800 shadow-2xl pointer-events-auto"
-              />
+              {/* Out-of-bounds Canvas subtle helper text/grid indicator */}
+              <div className="absolute inset-0 bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px] opacity-25 rounded-3xl pointer-events-none" />
+              
+              {/* Visual guidance label for out-of-bounds plotting */}
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 text-[9px] font-bold text-gray-500 tracking-widest uppercase pointer-events-none select-none opacity-60 group-hover:opacity-100 transition-opacity">
+                Extended Calibration Space (Out of Bounds Zone)
+              </div>
 
-              {/* Render Plotted Point Circles over the image */}
-              {!isOverlayToggled && imgRef.current && markers.map((m) => {
-                if (!m.pixel) return null;
-                
-                // Convert resolution-dependent coordinates to CSS client dimensions
-                const percentX = (m.pixel[0] / videoMetadata.width) * 100;
-                const percentY = (m.pixel[1] / videoMetadata.height) * 100;
-                const isActive = m.id === activeMarkerId;
-                
-                return (
-                  <div
-                    key={m.id}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActiveMarkerId(m.id);
-                    }}
-                    style={{
-                      left: `${percentX}%`,
-                      top: `${percentY}%`,
-                      transform: 'translate(-50%, -50%)',
-                    }}
-                    className={`absolute w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-extrabold cursor-pointer border shadow-lg transition-transform ${
-                      isActive 
-                        ? 'bg-emerald-400 border-white text-black scale-125 ring-4 ring-emerald-500/30' 
-                        : 'bg-black/80 border-emerald-400 text-emerald-400 hover:scale-110 hover:bg-emerald-950'
-                    }`}
-                    title={`${m.label} (${m.real[0]}m, ${m.real[1]}m)`}
-                  >
-                    {markers.indexOf(m) + 1}
-                  </div>
-                );
-              })}
+              <div 
+                style={{
+                  aspectRatio: `${videoMetadata.width} / ${videoMetadata.height}`,
+                }}
+                className="relative max-w-full max-h-[64vh] select-none overflow-visible"
+              >
+                <img
+                  ref={imgRef}
+                  src={isOverlayToggled && gridOverlayUrl ? gridOverlayUrl : videoMetadata.firstFrameUrl}
+                  alt="Calibration View"
+                  onLoad={handleImageLoad}
+                  draggable={false}
+                  className="w-full h-full object-cover rounded-xl border border-gray-850 shadow-2xl pointer-events-auto"
+                />
+
+                {/* Render Plotted Point Circles over the image */}
+                {!isOverlayToggled && imgRef.current && markers.map((m) => {
+                  if (!m.pixel) return null;
+                  
+                  // Convert resolution-dependent coordinates to CSS client dimensions
+                  const percentX = (m.pixel[0] / videoMetadata.width) * 100;
+                  const percentY = (m.pixel[1] / videoMetadata.height) * 100;
+                  const isActive = m.id === activeMarkerId;
+                  
+                  return (
+                    <div
+                      key={m.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveMarkerId(m.id);
+                      }}
+                      style={{
+                        left: `${percentX}%`,
+                        top: `${percentY}%`,
+                        transform: 'translate(-50%, -50%)',
+                      }}
+                      className={`absolute w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-extrabold cursor-pointer border shadow-lg transition-transform ${
+                        isActive 
+                          ? 'bg-emerald-400 border-white text-black scale-125 ring-4 ring-emerald-500/30' 
+                          : 'bg-black/80 border-emerald-400 text-emerald-400 hover:scale-110 hover:bg-emerald-950'
+                      }`}
+                      title={`${m.label} (${m.real[0]}m, ${m.real[1]}m)`}
+                    >
+                      {markers.indexOf(m) + 1}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
           
