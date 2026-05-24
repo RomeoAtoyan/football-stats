@@ -157,6 +157,12 @@ def run_tracking_pipeline(
                     
                     rx, ry = pixel_to_meter(foot_x, foot_y, homography_matrix)
                     
+                    # Filter out players on the neighboring field or background
+                    # Our field coordinates are 0 <= rx <= 30 and 0 <= ry <= 16.
+                    # We allow a margin (+-3.5m on goals, +-2m on touchlines) for out-of-bounds play
+                    if not (-3.5 <= rx <= 33.5 and -2.0 <= ry <= 18.0):
+                        continue
+                    
                     # Smooth trajectory with Kalman filter
                     if track_id not in kalman_filters:
                         kalman_filters[track_id] = KalmanFilter2D(rx, ry, dt=dt)
