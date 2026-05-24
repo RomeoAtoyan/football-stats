@@ -216,9 +216,12 @@ def run_tracking_pipeline(
                 
                 rx, ry = pixel_to_meter(foot_x, foot_y, homography_matrix)
                 
-                # Filter out players on the neighboring field in the background (far behind top touchline y2 < 280 px)
-                # We use a pixel-based threshold rather than ry to avoid dropping active players or the goalkeeper due to homography warping on the far edges.
-                if y2 < 280:
+                # Filter out players on neighboring fields or sidelines behind the blue advertising board fence.
+                # We use a unified slanted touchline boundary equation: y = max(280.0, 0.205 * foot_x + 110.0)
+                # Any player foot y2 coordinate that is smaller (higher vertically in the frame) than this
+                # boundary is physically standing on the neighboring pitch or sideline and is discarded.
+                y_boundary = max(280.0, 0.205 * foot_x + 110.0)
+                if y2 < y_boundary:
                     continue
                 
                 # Smooth trajectory with Kalman filter

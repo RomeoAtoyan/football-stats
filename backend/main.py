@@ -36,15 +36,20 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
-# Global processing state
+# Global processing state (automatically restored from disk if existing)
+_init_video = os.path.join(UPLOAD_DIR, "uploaded_match.mp4")
+_video_exists = os.path.exists(_init_video)
+_results_ready = os.path.exists(os.path.join(EXPORT_DIR, "match.json"))
+
 processing_status = {
-    "status": "idle",       # idle, processing, completed, failed
-    "progress": 0.0,        # 0.0 to 1.0
-    "message": "Ready",
+    "status": "completed" if _results_ready else ("idle" if _video_exists else "idle"),
+    "progress": 1.0 if _results_ready else 0.0,
+    "message": "Tracking results loaded from previous run." if _results_ready else ("Match video uploaded." if _video_exists else "Ready"),
     "error": None,
-    "video_path": None,
-    "results_ready": False
+    "video_path": _init_video if _video_exists else None,
+    "results_ready": _results_ready
 }
+
 
 DEFAULT_HOMOGRAPHY = np.array([
     [-0.10359927204181629, -0.4322571627908756,  100.96038284708395],
