@@ -1,16 +1,27 @@
 # Custom BoT-SORT Tracker Settings for PitchTrack AI
-# Optimized for small-sided football matches (10 players total) and moving camera pans
+# Optimized for small-sided football matches (10 players total, 5v5) and moving camera pans.
+# Tuned to MAXIMIZE ID consistency:
+#   - Re-ID (appearance embeddings) enabled to re-identify players after long occlusions
+#   - High new_track_thresh: prevents noise/flicker from spawning ghost player IDs
+#   - Long track_buffer: remembers lost players for ~10 seconds
+#   - Strong appearance gating for ReID swaps (low cosine distance required to merge)
 
-tracker_type: botsort # tracker type, ['botsort', 'bytetrack']
-track_high_thresh: 0.30 # threshold for the first association (allow tracking in shadow/low-contrast)
-track_low_thresh: 0.10 # threshold for the second association (keep tracking heavily occluded players)
-new_track_thresh: 0.40 # threshold for initiating a new track (prevents brief noise from spawning new player IDs)
-track_buffer: 90 # multi-object tracking memory buffer (remember lost players for 90 frames ~ 3 seconds at 30fps)
-match_thresh: 0.70 # similarity threshold for matching (lower to allow matching across fast camera movements)
-fuse_score: True # whether to fuse confidence score with IOU (required by modern Ultralytics BoT-SORT)
+tracker_type: botsort
+track_high_thresh: 0.45   # First-stage association threshold. Raised from 0.30 -> 0.45 for cleaner anchor matches.
+track_low_thresh: 0.10    # Second-stage threshold to recover occluded players via BoT-SORT two-stage association.
+new_track_thresh: 0.65    # Minimum confidence to spawn a NEW track ID. Raised from 0.40 -> 0.65 to crush ID inflation.
+track_buffer: 300         # Frames to keep lost tracks alive. 300 @ 30fps = 10s — survives long occlusions / out-of-frame.
+match_thresh: 0.80        # Cost (1-IoU + appearance) threshold for matching. 0.80 is the BoT-SORT paper default.
+fuse_score: True          # Fuse detection score with IoU during matching (required by modern Ultralytics).
 
-# BoT-SORT Specifics
-gmc_method: sparseOptFlow # enables Global Motion Compensation using optical flow to handle camera pans and zooms!
-proximity_thresh: 0.5 # proximity threshold for matching
-appearance_thresh: 0.8 # appearance threshold for matching
-with_reid: False # standard Re-ID is disabled to save computation; GMC is sufficient for camera motion compensation
+# BoT-SORT camera motion compensation
+gmc_method: sparseOptFlow # Global Motion Compensation via sparse optical flow — critical for moving handheld camera pans.
+
+# ReID — THE MOST IMPORTANT FIX FOR ID CONSISTENCY
+# When a player goes behind another, leaves the frame, or the camera pans away and back,
+# Re-ID uses appearance embeddings (cosine similarity of visual features) to recognize them
+# and reassign their ORIGINAL ID instead of spawning a brand new one.
+with_reid: True           # PREVIOUSLY FALSE — this was the #1 cause of ID inflation (5 players -> 36 IDs).
+model: auto               # "auto" uses YOLOv8m's native backbone features (minimal overhead, no extra inference).
+proximity_thresh: 0.50    # Minimum IoU for ReID to even consider a match (prevents ReID swapping players across the field).
+appearance_thresh: 0.25   # Cosine similarity threshold for ReID. BoT-SORT paper default for MOT17 = 0.25 (lower = more lenient reconnection).

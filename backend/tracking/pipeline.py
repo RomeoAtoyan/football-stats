@@ -3,7 +3,8 @@ import numpy as np
 import os
 import json
 import pickle
-from typing import Callable, Tuple, Dict, Any
+from typing import Callable, Tuple, Dict, Any, List
+from collections import defaultdict
 from loguru import logger
 from ultralytics import YOLO
 
@@ -11,6 +12,12 @@ from tracking.homography import pixel_to_meter
 from tracking.smoothing import KalmanFilter2D
 from tracking.distance import PlayerStatsTracker
 from tracking.team_assigner import TeamAssigner
+from tracking.track_merger import stitch_fragments
+
+# Bump this whenever the detector/tracker config materially changes, so stale
+# pickle caches written by an older version are auto-invalidated instead of
+# silently producing inconsistent IDs.
+TRACKING_CACHE_VERSION = 3
 
 def run_tracking_pipeline(
     video_path: str,
@@ -23,11 +30,12 @@ def run_tracking_pipeline(
     Core video processing pipeline with track caching:
     1. Checks if a pre-compiled tracking cache file exists to skip YOLO inference.
     2. Runs player detections on initial frames to fit TeamAssigner color clustering.
-    3. Runs YOLOv8 + BoT-SORT tracking (if cache missed) or loads tracks from cache.
+    3. Runs YOLOv8 + BoT-SORT(+ReID) tracking (if cache missed) or loads tracks from cache.
     4. Filters player foot coordinates with Kalman filters and projects to meters.
     5. Accumulates running speeds and total covered distance.
-    6. Draws bounding boxes on the output frame (Purple for Team A, Aqua for Team B).
-    7. Encodes the frames into output_video_path and writes analytics to export_json_path.
+    6. Runs an offline tracklet stitcher to consolidate fragmented IDs into stable player IDs.
+    7. Re-draws the annotated video using the consolidated IDs.
+    8. Writes the final analytics JSON.
     """
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -44,19 +52,23 @@ def run_tracking_pipeline(
     
     logger.info(f"Loaded input video: {width}x{height} @ {fps}fps, {total_frames} frames.")
     
-    # 0. Check for tracking cache
+    # 0. Check for tracking cache (version-gated)
     cache_path = os.path.join(os.path.dirname(export_json_path), "tracking_cache.pkl")
-    use_cache = os.path.exists(cache_path)
-    cached_tracks = {}
+    use_cache = False
+    cached_tracks: Dict[int, List[Dict[str, Any]]] = {}
     
-    if use_cache:
+    if os.path.exists(cache_path):
         try:
             with open(cache_path, "rb") as f:
-                cached_tracks = pickle.load(f)
-            logger.info(f"Using cached tracking data with {len(cached_tracks)} frames from {cache_path}")
+                cache_blob = pickle.load(f)
+            if isinstance(cache_blob, dict) and cache_blob.get("version") == TRACKING_CACHE_VERSION:
+                cached_tracks = cache_blob["tracks"]
+                use_cache = True
+                logger.info(f"Using cached tracking data with {len(cached_tracks)} frames from {cache_path} (v{TRACKING_CACHE_VERSION})")
+            else:
+                logger.info(f"Tracking cache is stale (got version {cache_blob.get('version') if isinstance(cache_blob, dict) else 'legacy'}, expected v{TRACKING_CACHE_VERSION}). Re-running tracker.")
         except Exception as e:
             logger.warning(f"Failed to load tracking cache: {e}. Running fresh tracking.")
-            use_cache = False
             
     model = None
     if not use_cache:
@@ -65,8 +77,7 @@ def run_tracking_pipeline(
         if progress_callback:
             progress_callback(0.02, "Loading computer vision tracking models...")
             
-        model_name = "yolov8m.pt" # Upgraded from yolov8n.pt (Nano) to yolov8m.pt (Medium) for much higher detection accuracy
-        # Ensure model exists in backend
+        model_name = "yolov8m.pt" # YOLOv8m (Medium) — solid balance of accuracy/speed for sports detection
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         model_path = os.path.join(base_dir, model_name)
         if not os.path.exists(model_path):
@@ -74,7 +85,7 @@ def run_tracking_pipeline(
             
         model = YOLO(model_path)
         
-    # 2. Team Color Classifier learning pass (KMeans)
+    # 2. Team Color Classifier learning pass (rule-based fluo vest detector)
     logger.info("Running initial calibration pass for team division...")
     if progress_callback:
         progress_callback(0.05, "Analyzing player jersey colors...")
@@ -82,7 +93,7 @@ def run_tracking_pipeline(
     team_assigner = TeamAssigner()
     
     if use_cache:
-        # Fine-tune team classifier using pre-extracted cached bounding boxes to save time
+        # Fine-tune team classifier using pre-extracted cached bounding boxes
         max_players_frame_idx = 0
         max_players_count = 0
         max_players_detections = {}
@@ -105,10 +116,8 @@ def run_tracking_pipeline(
         if success and max_players_count > 0:
             logger.info(f"Fitting TeamAssigner using cache with {max_players_count} players on frame {max_players_frame_idx}.")
             team_assigner.assign_team_colors(max_players_frame, max_players_detections)
-        else:
-            logger.warning("Failed to load calibration frame from video. Team classifier will fallback.")
     else:
-        # Read the first ~30 frames and find the frame with the most player detections to fit KMeans
+        # Read the first ~30 frames and find the frame with the most player detections to fit the classifier
         init_frame_idx = 0
         max_players_frame = None
         max_players_detections = {}
@@ -143,41 +152,37 @@ def run_tracking_pipeline(
     # Reset video capture for tracking pass
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     
-    # 3. Setup output video writer
-    os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # High compatibility MP4 writer
-    writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-    
-    # 4. Tracking and Drawing Loop
+    # 4. Tracking + per-frame stats accumulation pass (DOES NOT WRITE THE VIDEO YET)
+    # We need to first collect all raw tracks, run the offline tracklet stitcher to
+    # consolidate fragmented IDs, then rewind and re-render the video using the
+    # consolidated IDs so the on-screen tags match the JSON.
     kalman_filters: Dict[int, KalmanFilter2D] = {}
     stat_trackers: Dict[int, PlayerStatsTracker] = {}
-    frame_overlays: Dict[int, List[Dict[str, Any]]] = {}
+    raw_frame_detections: Dict[int, List[Dict[str, Any]]] = {}
+    raw_ball_detections: Dict[int, List[List[float]]] = {}
     
     frame_idx = 0
-    new_tracks_to_cache = {}
+    new_tracks_to_cache: Dict[int, List[Dict[str, Any]]] = {}
     
     while True:
         success, frame = cap.read()
         if not success:
             break
             
-        annotated_frame = frame.copy()
-        
-        detections = []
+        detections: List[Dict[str, Any]] = []
         
         if use_cache:
             detections = cached_tracks.get(frame_idx, [])
         else:
-            # Track objects: class 0 (person), class 32 (sports ball)
             tracker_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_botsort.yaml")
             results = model.track(
                 source=frame,
                 persist=True,
-                tracker=tracker_config_path, # Path to custom BoT-SORT settings (camera motion compensated)
+                tracker=tracker_config_path, # BoT-SORT + ReID + sparse-optical-flow GMC
                 classes=[0, 32],
-                conf=0.10, # Lowered to 0.10 to allow BoT-SORT's two-stage low-thresh association to resolve occlusions
+                conf=0.30, # Raised from 0.10 -> 0.30: stops noise from spawning low-confidence ghost tracks
                 iou=0.60,
-                imgsz=1280, # Temporarily lowered from 1600 for faster processing; bump back up for beast GPU runs
+                imgsz=1280,
                 verbose=False
             )
             
@@ -194,32 +199,38 @@ def run_tracking_pipeline(
                     })
             new_tracks_to_cache[frame_idx] = detections
             
-        frame_detections = []
-        ball_detections = []
+        frame_player_detections: List[Dict[str, Any]] = []
+        frame_ball_detections: List[List[float]] = []
         
         for det in detections:
             x1, y1, x2, y2 = det["bbox"]
             cls_id = det["cls"]
             track_id = det["id"]
             
-            # Check for class 0 (person) and verify tracking ID is set
             if cls_id == 0 and track_id is not None:
-                # Filter out only massive full-screen bounding box anomalies
+                # ---- Bounding-box sanity filters (kill ghost detections that fragment IDs) ----
                 box_w = x2 - x1
                 box_h = y2 - y1
+                if box_w <= 0 or box_h <= 0:
+                    continue
+                # 1) Reject impossibly huge full-screen anomalies
                 if box_w > width * 0.50 or box_h > height * 0.85:
                     continue
-                    
-                # 4a. Trajectory Math: Player foot position mapping
+                # 2) Reject tiny dot detections (almost always background noise far from cam)
+                if box_w < 8 or box_h < 20:
+                    continue
+                # 3) Reject horizontal-leaning boxes — a standing/running player is always taller than wide.
+                #    aspect_ratio (h/w) below 1.1 is almost certainly half a player or a non-person.
+                if (box_h / box_w) < 1.1:
+                    continue
+                
+                # 4a. Trajectory math: foot position -> pitch meters
                 foot_x = (x1 + x2) / 2.0
                 foot_y = y2
                 
                 rx, ry = pixel_to_meter(foot_x, foot_y, homography_matrix)
                 
-                # Filter out players on neighboring fields or sidelines behind the blue advertising board fence.
-                # We use a unified slanted touchline boundary equation: y = max(280.0, 0.205 * foot_x + 110.0)
-                # Any player foot y2 coordinate that is smaller (higher vertically in the frame) than this
-                # boundary is physically standing on the neighboring pitch or sideline and is discarded.
+                # Filter out players on neighboring fields or sidelines (slanted touchline boundary)
                 y_boundary = max(280.0, 0.205 * foot_x + 110.0)
                 if y2 < y_boundary:
                     continue
@@ -233,98 +244,168 @@ def run_tracking_pipeline(
                 kf.predict()
                 rx_smooth, ry_smooth = kf.update(rx, ry)
                 
-                # Accumulate distance and velocity metrics
                 tracker = stat_trackers[track_id]
                 tracker.add_position(frame_idx, rx_smooth, ry_smooth)
                 
-                # 4b. Team Classification
+                # 4b. Team Classification (per raw track ID — gets re-aggregated after stitching)
                 team_id = team_assigner.get_player_team(frame, [x1, y1, x2, y2], track_id)
-                team_color = team_assigner.team_colors[team_id]
                 
-                # 4c. Visual drawing annotations (glowing Purple and Aqua boxes)
-                # Bounding Box
-                cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), team_color, 2, lineType=cv2.LINE_AA)
-                
-                # Player ID Header: Draw filled rectangle tag
-                tag_text = f"P{track_id}"
-                (tw, th), baseline = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(
-                    annotated_frame, 
-                    (int(x1), int(y1) - th - 6), 
-                    (int(x1) + tw + 10, int(y1)), 
-                    team_color, 
-                    -1
-                )
-                # Text inside tag
-                cv2.putText(
-                    annotated_frame, 
-                    tag_text, 
-                    (int(x1) + 5, int(y1) - 4), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 
-                    0.5, 
-                    (255, 255, 255), 
-                    1, 
-                    cv2.LINE_AA
-                )
-                
-                frame_detections.append({
-                    "id": track_id,
-                    "team": "A" if team_id == 1 else "B",
-                    "bbox": [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)],
-                    "real": [round(rx_smooth, 2), round(ry_smooth, 2)],
-                    "speed": round(tracker.path[-1]["speed"], 1)
+                frame_player_detections.append({
+                    "raw_id": track_id,
+                    "team": team_id,
+                    "bbox": [x1, y1, x2, y2],
+                    "real": (rx_smooth, ry_smooth),
+                    "speed": tracker.path[-1]["speed"]
                 })
                 
-            # Check for class 32 (sports ball)
             elif cls_id == 32:
-                ball_detections.append(det["bbox"])
+                frame_ball_detections.append(det["bbox"])
                 
-        # 4d. Highlight the ball on frame (Green glowing circle)
-        for ball_box in ball_detections:
+        raw_frame_detections[frame_idx] = frame_player_detections
+        raw_ball_detections[frame_idx] = frame_ball_detections
+        frame_idx += 1
+        
+        if progress_callback and total_frames > 0:
+            # First pass takes ~60% of the work — render pass takes the next ~30%
+            percentage = 0.10 + 0.60 * (frame_idx / total_frames)
+            progress_callback(percentage, f"Tracking pass: frame {frame_idx}/{total_frames} ({int((frame_idx/total_frames)*100)}%)")
+            
+    cap.release()
+    
+    # Save cache if we did a fresh run (versioned envelope so stale caches auto-expire)
+    if not use_cache and len(new_tracks_to_cache) > 0:
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump({"version": TRACKING_CACHE_VERSION, "tracks": new_tracks_to_cache}, f)
+            logger.info(f"Saved tracking cache (v{TRACKING_CACHE_VERSION}) with {len(new_tracks_to_cache)} frames to {cache_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save tracking cache: {e}")
+    
+    # 5. ===== OFFLINE TRACKLET STITCHING =====
+    # The single most impactful fix for "5 players turned into 36 IDs": consolidate
+    # fragmented tracks back into the smallest set of consistent canonical players.
+    if progress_callback:
+        progress_callback(0.71, "Stitching fragmented player IDs into stable identities...")
+    raw_id_to_canonical, canonical_to_team = stitch_fragments(
+        stat_trackers=stat_trackers,
+        team_dict=team_assigner.player_team_dict,
+        fps=fps,
+    )
+    
+    # Build canonical stat trackers by merging raw stat trackers belonging to the same canonical ID
+    canonical_to_raw_ids: Dict[int, List[int]] = defaultdict(list)
+    for raw_id, canonical in raw_id_to_canonical.items():
+        canonical_to_raw_ids[canonical].append(raw_id)
+        
+    canonical_stat_trackers: Dict[int, PlayerStatsTracker] = {}
+    for canonical, raw_ids in canonical_to_raw_ids.items():
+        merged = PlayerStatsTracker(canonical, dt=dt)
+        # Concatenate paths in chronological order across all fragments in the cluster
+        combined_path: List[Tuple[int, float, float]] = []
+        for raw_id in raw_ids:
+            for sample in stat_trackers[raw_id].path:
+                combined_path.append((sample["frame"], sample["x"], sample["y"]))
+        combined_path.sort(key=lambda t: t[0])
+        for f, x, y in combined_path:
+            merged.add_position(f, x, y)
+        canonical_stat_trackers[canonical] = merged
+    
+    # 6. ===== ANNOTATION RENDER PASS (using canonical IDs so on-screen tags match JSON) =====
+    if progress_callback:
+        progress_callback(0.72, "Rendering annotated match video with stable player IDs...")
+        
+    os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    writer = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    
+    cap = cv2.VideoCapture(video_path)
+    frame_overlays: Dict[int, List[Dict[str, Any]]] = {}
+    
+    render_frame_idx = 0
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
+            
+        annotated_frame = frame.copy()
+        frame_record: List[Dict[str, Any]] = []
+        
+        for player in raw_frame_detections.get(render_frame_idx, []):
+            raw_id = player["raw_id"]
+            canonical_id = raw_id_to_canonical.get(raw_id)
+            if canonical_id is None:
+                continue  # Filtered out by the stitcher as noise
+            
+            x1, y1, x2, y2 = player["bbox"]
+            team_id = canonical_to_team.get(canonical_id, player["team"])
+            team_color = team_assigner.team_colors[team_id]
+            rx_smooth, ry_smooth = player["real"]
+            speed = player["speed"]
+            
+            cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)),
+                          team_color, 2, lineType=cv2.LINE_AA)
+            
+            tag_text = f"P{canonical_id}"
+            (tw, th), _ = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.rectangle(
+                annotated_frame,
+                (int(x1), int(y1) - th - 6),
+                (int(x1) + tw + 10, int(y1)),
+                team_color,
+                -1
+            )
+            cv2.putText(
+                annotated_frame, tag_text,
+                (int(x1) + 5, int(y1) - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA
+            )
+            
+            frame_record.append({
+                "id": canonical_id,
+                "team": "A" if team_id == 1 else "B",
+                "bbox": [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)],
+                "real": [round(rx_smooth, 2), round(ry_smooth, 2)],
+                "speed": round(speed, 1)
+            })
+        
+        # Draw the ball
+        for ball_box in raw_ball_detections.get(render_frame_idx, []):
             bx1, by1, bx2, by2 = ball_box
             bcx = int((bx1 + bx2) / 2)
             bcy = int((by1 + by2) / 2)
-            # Draw small circle around the ball
             cv2.circle(annotated_frame, (bcx, bcy), 8, (0, 255, 0), 2, lineType=cv2.LINE_AA)
             cv2.circle(annotated_frame, (bcx, bcy), 2, (0, 255, 0), -1, lineType=cv2.LINE_AA)
-            
-        # Save details for frame overlay
-        frame_overlays[frame_idx] = frame_detections
-        writer.write(annotated_frame)
-        frame_idx += 1
         
-        # Report progress
+        frame_overlays[render_frame_idx] = frame_record
+        writer.write(annotated_frame)
+        render_frame_idx += 1
+        
         if progress_callback and total_frames > 0:
-            percentage = 0.10 + 0.90 * (frame_idx / total_frames)
-            progress_callback(percentage, f"Processing match tracking: frame {frame_idx}/{total_frames} ({int((frame_idx/total_frames)*100)}%)")
+            percentage = 0.72 + 0.28 * (render_frame_idx / total_frames)
+            progress_callback(percentage, f"Rendering: frame {render_frame_idx}/{total_frames}")
             
     cap.release()
     writer.release()
     
-    # Save cache if we did a fresh run
-    if not use_cache and len(new_tracks_to_cache) > 0:
-        try:
-            with open(cache_path, "wb") as f:
-                pickle.dump(new_tracks_to_cache, f)
-            logger.info(f"Saved tracking cache with {len(new_tracks_to_cache)} frames to {cache_path}")
-        except Exception as e:
-            logger.warning(f"Failed to save tracking cache: {e}")
-    
-    # 5. Finalize Statistics and Export JSON
+    # 7. Finalize Statistics and Export JSON
     logger.info("Finalizing player metrics summaries...")
     players_summary = []
-    for tracker in stat_trackers.values():
+    for canonical_id, tracker in canonical_stat_trackers.items():
         summary = tracker.get_summary()
-        # Retrieve player team ID
-        p_id = summary["id"]
-        team_id = team_assigner.player_team_dict.get(p_id, 1)
+        team_id = canonical_to_team.get(canonical_id, 2)
         summary["team"] = "A" if team_id == 1 else "B"
-        
-        # Filter out short transient detections (less than 1.0 second active)
+        # Filter out short transient detections (less than 1.0 second active total)
         if len(summary["path"]) >= int(fps * 1.0):
             players_summary.append(summary)
             
-    # Format matches JSON
+    # Sort players: by team, then by canonical ID
+    players_summary.sort(key=lambda p: (p["team"], p["id"]))
+    
+    team_a_final = sum(1 for p in players_summary if p["team"] == "A")
+    team_b_final = sum(1 for p in players_summary if p["team"] == "B")
+    logger.info(f"FINAL stable player count: Team A={team_a_final}, Team B={team_b_final} "
+                f"(target 5v5 = 10 total).")
+    
     output_data = {
         "metadata": {
             "width": width,

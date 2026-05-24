@@ -1,6 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { usePitchTrackStore } from '../store/pitchtrackStore';
-import { Play, Download, User, Activity, Layers, RefreshCw, Eye, EyeOff, Grid } from 'lucide-react';
+import { usePlayerThumbnails } from '../hooks/usePlayerThumbnails';
+import { PlayerRosterCard } from './PlayerRosterCard';
+import {
+  Play,
+  Download,
+  User,
+  Activity,
+  Layers,
+  RefreshCw,
+  Eye,
+  EyeOff,
+  Grid,
+  Users,
+  Timer,
+  Film,
+} from 'lucide-react';
 
 const pitchSegments = [
   // Outer boundary outline
@@ -55,6 +70,7 @@ const projectPoint = (rx: number, ry: number, H_inv: number[][]): [number, numbe
 
 export const DashboardView: React.FC = () => {
   const { results, selectedPlayerId, setSelectedPlayerId, resetAll } = usePitchTrackStore();
+  const { thumbnails, loading: thumbsLoading } = usePlayerThumbnails(results);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [showTeamA, setShowTeamA] = useState(true);
@@ -88,10 +104,12 @@ export const DashboardView: React.FC = () => {
   }, []);
 
   const startPlaybackLoop = () => {
+    if (!results) return;
+    const fps = results.metadata.fps;
     const loop = () => {
       if (!videoRef.current) return;
       const video = videoRef.current;
-      const frame = Math.round(video.currentTime * results.metadata.fps);
+      const frame = Math.round(video.currentTime * fps);
       setCurrentFrame(frame);
 
       if (!video.paused && !video.ended) {
@@ -369,32 +387,46 @@ export const DashboardView: React.FC = () => {
   }, [selectedPlayerId, currentFrame, showTeamA, showTeamB, results, selectedPlayer]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-76px)] overflow-hidden">
-      {/* Upper bar with quick details */}
-      <div className="flex justify-between items-center px-6 py-3 border-b border-gray-900 bg-gray-950/20 text-xs text-gray-400 font-mono">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1">
+    <div className="flex flex-col h-[calc(100vh-76px)] overflow-hidden bg-[#080c14]">
+      {/* Match summary strip */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 border-b border-white/5 bg-gray-950/50">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-purple-500/10 border border-purple-500/20">
             <Layers className="w-3.5 h-3.5 text-purple-400" />
-            Team A Size: <strong className="text-purple-300 font-bold">{teamAPlayers.length}</strong>
-          </span>
-          <span className="text-gray-700">|</span>
-          <span className="flex items-center gap-1">
+            <span className="text-xs text-gray-400">Team A</span>
+            <strong className="text-sm text-purple-300 tabular-nums">{teamAPlayers.length}</strong>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
             <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            Team B Size: <strong className="text-cyan-300 font-bold">{teamBPlayers.length}</strong>
-          </span>
+            <span className="text-xs text-gray-400">Team B</span>
+            <strong className="text-sm text-cyan-300 tabular-nums">{teamBPlayers.length}</strong>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.03] border border-white/10">
+            <Users className="w-3.5 h-3.5 text-gray-400" />
+            <span className="text-xs text-gray-400">Tracked</span>
+            <strong className="text-sm text-gray-200 tabular-nums">{results.players.length}</strong>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <span>FPS: <strong className="text-gray-200">{results.metadata.fps}</strong></span>
-          <span>Frames: <strong className="text-gray-200">{results.metadata.totalFrames}</strong></span>
-          <span>Duration: <strong className="text-gray-200">{results.metadata.duration}s</strong></span>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/5">
+            <Film className="w-3 h-3" />
+            {results.metadata.fps} fps
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/5">
+            {results.metadata.totalFrames} frames
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/5">
+            <Timer className="w-3 h-3" />
+            {results.metadata.duration}s
+          </span>
         </div>
       </div>
 
       {/* Main Double Grid Dashboard Layout */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left Panel: Stream Video Annotated Player Bounding Boxes */}
-        <div className="flex-1 flex flex-col justify-center items-center p-6 bg-gray-950/20 overflow-y-auto">
-          <div className="relative w-full max-w-4xl rounded-3xl overflow-hidden border border-gray-805 shadow-2xl bg-black">
+        <div className="flex-1 flex flex-col justify-center items-center p-4 lg:p-6 min-w-0 overflow-y-auto">
+          <div className="relative w-full max-w-5xl rounded-2xl overflow-hidden border border-white/10 shadow-2xl shadow-black/50 bg-black">
             <video 
               ref={videoRef}
               src="http://localhost:8000/uploads/uploaded_match.mp4" 
@@ -616,7 +648,7 @@ export const DashboardView: React.FC = () => {
                   onClick={() => setShowGridOverlay(!showGridOverlay)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-[10.5px] cursor-pointer transition-all shadow-lg select-none ${
                     showGridOverlay
-                      ? 'bg-red-650 hover:bg-red-550 border-red-500 text-white shadow-[0_0_12px_rgba(239,68,68,0.35)]'
+                      ? 'bg-red-600 hover:bg-red-500 border-red-400 text-white shadow-[0_0_12px_rgba(239,68,68,0.35)]'
                       : 'bg-black/65 hover:bg-black/85 border-white/5 text-gray-300 hover:text-white'
                   }`}
                   title="Toggle Warped Perspective Field Grid Overlay"
@@ -639,168 +671,195 @@ export const DashboardView: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Sidebar: Squad list & Player details tracker */}
-        <div className="w-96 bg-gray-900/40 border-l border-gray-900 flex flex-col h-full overflow-hidden">
-          {/* Header tabs */}
-          <div className="p-4 border-b border-gray-900 bg-gray-950/25">
-            <span className="text-[10px] text-gray-500 font-black tracking-widest block uppercase font-mono">
-              Visual Metric Core
-            </span>
-            <h3 className="text-sm font-black text-gray-200 uppercase mt-0.5">Tactical Squad Breakdown</h3>
+        {/* Right panel: squad roster + tactical map + player detail */}
+        <div className="w-[min(100%,420px)] xl:w-[440px] shrink-0 bg-gray-950/60 border-l border-white/5 flex flex-col h-full overflow-hidden">
+          <div className="px-4 py-3.5 border-b border-white/5 bg-gradient-to-r from-gray-950 to-gray-900/80">
+            <p className="text-[10px] font-medium text-gray-500 uppercase tracking-widest">Squad roster</p>
+            <h3 className="text-base font-semibold text-gray-100 mt-0.5">Player profiles</h3>
+            {thumbsLoading && (
+              <p className="text-[10px] text-gray-500 mt-1 flex items-center gap-1.5">
+                <span className="inline-block w-3 h-3 rounded-full border border-gray-600 border-t-purple-400 animate-spin" />
+                Generating thumbnails from match video…
+              </p>
+            )}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
-            {/* Squad Colors grids split */}
-            <div className="space-y-4">
-              {/* Team A Grid - Purple Bounding Boxes */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-[10px] font-black tracking-wider uppercase font-mono">
-                  <div className="flex items-center gap-1.5 text-purple-400">
-                    <div className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.6)]" />
-                    Team A (Purple Boxes)
-                  </div>
-                  <button 
-                    onClick={() => setShowTeamA(!showTeamA)}
-                    className="p-1 rounded bg-gray-950/20 hover:bg-gray-800 text-gray-500 hover:text-purple-400 transition-all cursor-pointer border border-white/5 active:scale-90"
-                    title={showTeamA ? "Hide Purple Boxes" : "Show Purple Boxes"}
-                  >
-                    {showTeamA ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                  </button>
+          <div className="flex-1 overflow-y-auto p-4 space-y-5 dashboard-scroll">
+            {/* Team A roster */}
+            <section className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-purple-500 shadow-[0_0_8px_rgba(168,85,247,0.5)]" />
+                  <h4 className="text-xs font-semibold text-purple-300">Team A · Purple</h4>
+                  <span className="text-[10px] text-gray-600 tabular-nums">({teamAPlayers.length})</span>
                 </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {teamAPlayers.map(player => {
-                    const isSelected = player.id === selectedPlayerId;
-                    return (
-                      <button
-                        key={player.id}
-                        onClick={() => setSelectedPlayerId(isSelected ? null : player.id)}
-                        className={`py-2 rounded-xl border font-bold text-xs uppercase transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-purple-950/30 border-purple-500 text-purple-300 shadow-[0_0_12px_rgba(168,85,247,0.3)]'
-                            : 'bg-purple-950/5 border-purple-950/40 text-purple-400 hover:border-purple-500/40 hover:bg-purple-950/10'
-                        }`}
-                      >
-                        P{player.id}
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTeamA(!showTeamA)}
+                  className="p-1.5 rounded-lg text-gray-500 hover:text-purple-300 hover:bg-white/5 border border-transparent hover:border-white/10 transition-colors cursor-pointer"
+                  title={showTeamA ? 'Hide Team A on video' : 'Show Team A on video'}
+                >
+                  {showTeamA ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                </button>
               </div>
+              {teamAPlayers.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2.5">
+                  {teamAPlayers.map((player) => (
+                    <PlayerRosterCard
+                      key={player.id}
+                      player={player}
+                      thumbnailUrl={thumbnails[player.id]}
+                      isLoadingThumb={thumbsLoading && !thumbnails[player.id]}
+                      isSelected={player.id === selectedPlayerId}
+                      onSelect={() =>
+                        setSelectedPlayerId(player.id === selectedPlayerId ? null : player.id)
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-gray-600 py-3 text-center rounded-lg border border-dashed border-white/10">
+                  No Team A players detected
+                </p>
+              )}
+            </section>
 
-              {/* Team B Grid - Aqua Bounding Boxes */}
-              <div className="space-y-2 pt-2">
-                <div className="flex items-center justify-between text-[10px] font-black tracking-wider uppercase font-mono">
-                  <div className="flex items-center gap-1.5 text-cyan-400">
-                    <div className="w-2.5 h-2.5 rounded-full bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.6)]" />
-                    Team B (Aqua Boxes)
-                  </div>
-                  <button 
-                    onClick={() => setShowTeamB(!showTeamB)}
-                    className="p-1 rounded bg-gray-950/20 hover:bg-gray-800 text-gray-500 hover:text-cyan-400 transition-all cursor-pointer border border-white/5 active:scale-90"
-                    title={showTeamB ? "Hide Aqua Boxes" : "Show Aqua Boxes"}
-                  >
-                    {showTeamB ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                  </button>
+            {/* Team B roster */}
+            <section className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
+                  <h4 className="text-xs font-semibold text-cyan-300">Team B · Aqua</h4>
+                  <span className="text-[10px] text-gray-600 tabular-nums">({teamBPlayers.length})</span>
                 </div>
-                <div className="grid grid-cols-4 gap-2">
-                  {teamBPlayers.map(player => {
-                    const isSelected = player.id === selectedPlayerId;
-                    return (
-                      <button
-                        key={player.id}
-                        onClick={() => setSelectedPlayerId(isSelected ? null : player.id)}
-                        className={`py-2 rounded-xl border font-bold text-xs uppercase transition-all cursor-pointer ${
-                          isSelected
-                            ? 'bg-cyan-950/30 border-cyan-500 text-cyan-300 shadow-[0_0_12px_rgba(6,182,212,0.3)]'
-                            : 'bg-cyan-950/5 border-cyan-950/40 text-cyan-400 hover:border-cyan-500/40 hover:bg-cyan-950/10'
-                        }`}
-                      >
-                        P{player.id}
-                      </button>
-                    );
-                  })}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTeamB(!showTeamB)}
+                  className="p-1.5 rounded-lg text-gray-500 hover:text-cyan-300 hover:bg-white/5 border border-transparent hover:border-white/10 transition-colors cursor-pointer"
+                  title={showTeamB ? 'Hide Team B on video' : 'Show Team B on video'}
+                >
+                  {showTeamB ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                </button>
               </div>
-            </div>
+              {teamBPlayers.length > 0 ? (
+                <div className="grid grid-cols-2 gap-2.5">
+                  {teamBPlayers.map((player) => (
+                    <PlayerRosterCard
+                      key={player.id}
+                      player={player}
+                      thumbnailUrl={thumbnails[player.id]}
+                      isLoadingThumb={thumbsLoading && !thumbnails[player.id]}
+                      isSelected={player.id === selectedPlayerId}
+                      onSelect={() =>
+                        setSelectedPlayerId(player.id === selectedPlayerId ? null : player.id)
+                      }
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-gray-600 py-3 text-center rounded-lg border border-dashed border-white/10">
+                  No Team B players detected
+                </p>
+              )}
+            </section>
 
-            {/* Persistent 2D Pitch Top-down Live Map */}
-            <div className="space-y-1.5 pt-1">
-              <span className="text-[9px] text-gray-500 font-black tracking-widest uppercase block font-mono">
-                2D Pitch Top-down Live Map
-              </span>
-              <div className="relative rounded-2xl overflow-hidden border border-gray-850 aspect-[30/16] w-full shadow-inner bg-black">
-                <canvas 
-                  ref={canvasRef} 
-                  width={300} 
-                  height={160}
-                  className="w-full h-full"
-                />
-                <div className="absolute top-2 left-2 flex items-center gap-1 pointer-events-none px-1.5 py-0.5 rounded bg-black/70 border border-white/5 text-[8px] font-bold text-emerald-400">
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                  Live Tactical view
+            {/* Tactical mini-map */}
+            <section className="space-y-2 pt-1">
+              <p className="text-[10px] font-medium text-gray-500 uppercase tracking-widest">
+                Live tactical map
+              </p>
+              <div className="relative rounded-xl overflow-hidden border border-white/10 aspect-[30/16] w-full bg-[#081c15]">
+                <canvas ref={canvasRef} width={300} height={160} className="w-full h-full" />
+                <div className="absolute top-2 left-2 flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-black/60 border border-white/10 text-[9px] font-medium text-emerald-400">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Live
                 </div>
               </div>
-              <div className="flex justify-between text-[8px] font-bold text-gray-500 uppercase tracking-widest px-1 font-mono">
-                <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Start (t=0)</span>
-                <span className="flex items-center gap-1">End (t=end) <span className="w-1.5 h-1.5 rounded-full bg-red-500" /></span>
-              </div>
-            </div>
+            </section>
 
-            {/* Selected Player Metric Overlay */}
+            {/* Selected player detail */}
             {selectedPlayer ? (
-              <div className="space-y-4 border-t border-gray-850/50 pt-4 animate-fade-in">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <div className={`w-8.5 h-8.5 rounded-xl flex items-center justify-center font-black text-xs ${
-                      selectedPlayer.team === 'A' ? 'bg-purple-600 text-white' : 'bg-cyan-500 text-black'
-                    }`}>
-                      <User className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-black text-gray-200 uppercase font-mono">PLAYER {selectedPlayer.id}</h4>
-                      <span className="text-[9px] text-gray-500 font-bold uppercase tracking-wider block -mt-0.5">
-                        Team {selectedPlayer.team === 'A' ? 'A (Purple)' : 'B (Aqua)'}
-                      </span>
-                    </div>
+              <section className="rounded-xl border border-white/10 bg-white/[0.02] overflow-hidden animate-fade-in">
+                <div className="flex gap-0">
+                  <div className="w-28 shrink-0 bg-gray-950">
+                    {thumbnails[selectedPlayer.id] ? (
+                      <img
+                        src={thumbnails[selectedPlayer.id]}
+                        alt={`Player ${selectedPlayer.id}`}
+                        className="h-full w-full object-cover object-top min-h-[112px]"
+                      />
+                    ) : (
+                      <div
+                        className={`flex min-h-[112px] h-full items-center justify-center ${
+                          selectedPlayer.team === 'A'
+                            ? 'bg-purple-950/30'
+                            : 'bg-cyan-950/30'
+                        }`}
+                      >
+                        <User
+                          className={`w-10 h-10 ${
+                            selectedPlayer.team === 'A' ? 'text-purple-500/50' : 'text-cyan-500/50'
+                          }`}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1 p-3 min-w-0">
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider">Selected</p>
+                    <h4 className="text-lg font-bold text-gray-100 tabular-nums">P{selectedPlayer.id}</h4>
+                    <p
+                      className={`text-xs font-medium ${
+                        selectedPlayer.team === 'A' ? 'text-purple-400' : 'text-cyan-400'
+                      }`}
+                    >
+                      Team {selectedPlayer.team}
+                      {selectedPlayer.team === 'A' ? ' · Purple vest' : ' · Aqua'}
+                    </p>
                   </div>
                 </div>
-
-                {/* Dashboard Stats */}
-                <div className="grid grid-cols-3 gap-2 text-[11px] font-mono text-gray-400">
-                  <div className="p-2.5 rounded-xl bg-gray-950/20 border border-gray-850">
-                    <span className="text-[8px] text-gray-500 block uppercase tracking-wider font-bold">DISTANCE</span>
-                    <span className="font-black text-xs text-gray-200">{selectedPlayer.distance} m</span>
+                <div className="grid grid-cols-3 gap-px bg-white/5 border-t border-white/5">
+                  <div className="p-2.5 bg-gray-950/40 text-center">
+                    <p className="text-[9px] text-gray-500 uppercase">Distance</p>
+                    <p className="text-sm font-semibold text-gray-100 tabular-nums">
+                      {selectedPlayer.distance} m
+                    </p>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-gray-950/20 border border-gray-850">
-                    <span className="text-[8px] text-gray-500 block uppercase tracking-wider font-bold">AVG SPEED</span>
-                    <span className="font-black text-xs text-gray-200">{selectedPlayer.avgSpeed} km/h</span>
+                  <div className="p-2.5 bg-gray-950/40 text-center">
+                    <p className="text-[9px] text-gray-500 uppercase">Avg</p>
+                    <p className="text-sm font-semibold text-gray-100 tabular-nums">
+                      {selectedPlayer.avgSpeed}
+                    </p>
+                    <p className="text-[9px] text-gray-600">km/h</p>
                   </div>
-                  <div className="p-2.5 rounded-xl bg-gray-950/20 border border-gray-850">
-                    <span className="text-[8px] text-gray-500 block uppercase tracking-wider font-bold">TOP SPEED</span>
-                    <span className="font-black text-xs text-amber-400">{selectedPlayer.topSpeed} km/h</span>
+                  <div className="p-2.5 bg-gray-950/40 text-center">
+                    <p className="text-[9px] text-gray-500 uppercase">Top</p>
+                    <p className="text-sm font-semibold text-amber-400 tabular-nums">
+                      {selectedPlayer.topSpeed}
+                    </p>
+                    <p className="text-[9px] text-gray-600">km/h</p>
                   </div>
                 </div>
-              </div>
+              </section>
             ) : (
-              /* Idle Sidebar selection prompt */
-              <div className="p-8 text-center border border-dashed border-gray-850 rounded-2xl bg-gray-950/10 text-gray-500 space-y-2">
-                <Activity className="w-8 h-8 mx-auto text-gray-600 animate-pulse" />
-                <h4 className="text-xs font-black uppercase text-gray-400 tracking-wider">Select a Player Profile</h4>
-                <p className="text-[10px] leading-relaxed max-w-xs mx-auto">
-                  Click on any player coordinate tag above to plot their running metrics and 2D tactical field tracking trails!
+              <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center space-y-2">
+                <Activity className="w-7 h-7 mx-auto text-gray-600" />
+                <p className="text-xs font-medium text-gray-400">Select a player</p>
+                <p className="text-[11px] text-gray-600 leading-relaxed">
+                  Tap a profile card to highlight their trail on the pitch map and bounding box on
+                  the video.
                 </p>
               </div>
             )}
           </div>
 
-          {/* Reset button at bottom */}
-          <div className="p-4 border-t border-gray-900 bg-gray-950/25">
+          <div className="p-4 border-t border-white/5 bg-gray-950/80">
             <button
+              type="button"
               onClick={resetAll}
-              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gray-800 hover:bg-gray-750 text-gray-300 hover:text-white font-bold text-xs uppercase tracking-wider transition-all border border-gray-750 active:scale-[0.98] cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-sm font-medium transition-colors border border-white/10 cursor-pointer"
             >
-              <RefreshCw className="w-4 h-4 text-purple-400 animate-spin" style={{ animationDuration: '6s' }} />
-              Process New Match
+              <RefreshCw className="w-4 h-4 text-purple-400" />
+              Process new match
             </button>
           </div>
         </div>

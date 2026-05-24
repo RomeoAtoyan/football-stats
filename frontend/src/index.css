@@ -50,3 +50,7 @@ body::selection {
 ::-webkit-scrollbar-thumb:hover {
   background: #40916c;
 }
+
+.dashboard-scroll {
+  scrollbar-gutter: stable;
+}
