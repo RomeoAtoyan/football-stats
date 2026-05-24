@@ -19,8 +19,6 @@ const landmarks = [
   { id: 'left_goal_right_post', name: 'Left Goal, Right Post (0m, 9.5m)', real: [0.0, 9.5] as [number, number] },
   { id: 'left_goal_penalty_dot', name: 'Left Goal Penalty Dot (6m, 8m)', real: [6.0, 8.0] as [number, number] },
   { id: 'center_spot', name: 'Center Spot / Dot (15m, 8m)', real: [15.0, 8.0] as [number, number] },
-  { id: 'center_top_intersect', name: 'Center-Top Line Intersect (15m, 0m)', real: [15.0, 0.0] as [number, number] },
-  { id: 'center_bottom_intersect', name: 'Center-Bottom Line Intersect (15m, 16m)', real: [15.0, 16.0] as [number, number] },
   { id: 'right_goal_left_post', name: 'Right Goal, Left Post (30m, 6.5m)', real: [30.0, 6.5] as [number, number] },
   { id: 'right_goal_right_post', name: 'Right Goal, Right Post (30m, 9.5m)', real: [30.0, 9.5] as [number, number] },
   { id: 'right_goal_penalty_dot', name: 'Right Goal Penalty Dot (24m, 8m)', real: [24.0, 8.0] as [number, number] },
@@ -34,19 +32,6 @@ const pitchSegments = [
   { rx1: 0, ry1: 16, rx2: 30, ry2: 16 },
   { rx1: 0, ry1: 0, rx2: 0, ry2: 16 },
   { rx1: 30, ry1: 0, rx2: 30, ry2: 16 },
-
-  // Center line
-  { rx1: 15, ry1: 0, rx2: 15, ry2: 16 },
-
-  // Left Penalty Box
-  { rx1: 0, ry1: 3.2, rx2: 4.5, ry2: 3.2 },
-  { rx1: 4.5, ry1: 3.2, rx2: 4.5, ry2: 12.8 },
-  { rx1: 4.5, ry1: 12.8, rx2: 0, ry2: 12.8 },
-
-  // Right Penalty Box
-  { rx1: 30, ry1: 3.2, rx2: 25.5, ry2: 3.2 },
-  { rx1: 25.5, ry1: 3.2, rx2: 25.5, ry2: 12.8 },
-  { rx1: 25.5, ry1: 12.8, rx2: 30, ry2: 12.8 },
 
   // Left Goal posts
   { rx1: 0, ry1: 6.5, rx2: 0, ry2: 9.5 },
@@ -521,6 +506,73 @@ export const UploadView: React.FC = () => {
   const calibratedCount = Object.keys(calibrationPoints).length;
   const H_inv = currentHomography ? invert3x3(currentHomography) : null;
 
+  // Manually approximate curved D-penalty areas for the warped vector overlay
+  const getLeftPenaltyAreaPoints = (H_matrix: number[][]) => {
+    if (!videoMetadata) return '';
+    const points: [number, number][] = [];
+    const r = 5.0; // 5.0m arc radius
+    // Top quarter-arc centered at top post (0, 6.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = -Math.PI / 2 + (i / 12) * (Math.PI / 2);
+      const rx = r * Math.cos(theta);
+      const ry = 6.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / videoMetadata.width) * 100,
+          (projected[1] / videoMetadata.height) * 100
+        ]);
+      }
+    }
+    // Bottom quarter-arc centered at bottom post (0, 9.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = (i / 12) * (Math.PI / 2);
+      const rx = r * Math.cos(theta);
+      const ry = 9.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / videoMetadata.width) * 100,
+          (projected[1] / videoMetadata.height) * 100
+        ]);
+      }
+    }
+    return points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+  };
+
+  const getRightPenaltyAreaPoints = (H_matrix: number[][]) => {
+    if (!videoMetadata) return '';
+    const points: [number, number][] = [];
+    const r = 5.0; // 5.0m arc radius
+    // Top quarter-arc centered at (30, 6.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = -Math.PI / 2 - (i / 12) * (Math.PI / 2);
+      const rx = 30.0 + r * Math.cos(theta);
+      const ry = 6.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / videoMetadata.width) * 100,
+          (projected[1] / videoMetadata.height) * 100
+        ]);
+      }
+    }
+    // Bottom quarter-arc centered at (30, 9.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = Math.PI - (i / 12) * (Math.PI / 2);
+      const rx = 30.0 + r * Math.cos(theta);
+      const ry = 9.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / videoMetadata.width) * 100,
+          (projected[1] / videoMetadata.height) * 100
+        ]);
+      }
+    }
+    return points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+  };
+
   return (
     <div className="flex flex-col items-center justify-center min-h-[75vh] px-6 py-12 max-w-6xl mx-auto w-full">
       {/* Intro Header */}
@@ -632,6 +684,124 @@ export const UploadView: React.FC = () => {
                     draggable={false}
                   />
 
+                  {/* Projected Warped Calibration Grid Overlay (Draws inside video container, in RED) */}
+                  {showGridOverlay && H_inv && (
+                    <svg 
+                      className="absolute inset-0 w-full h-full pointer-events-none z-10 animate-fade-in"
+                      viewBox="0 0 100 100"
+                      preserveAspectRatio="none"
+                    >
+                      {/* Warped Pitch Lines */}
+                      {pitchSegments.map((seg, sIdx) => {
+                        const pt1 = projectPoint(seg.rx1, seg.ry1, H_inv);
+                        const pt2 = projectPoint(seg.rx2, seg.ry2, H_inv);
+                        if (!pt1 || !pt2) return null;
+                        
+                        const x1 = (pt1[0] / videoMetadata.width) * 100;
+                        const y1 = (pt1[1] / videoMetadata.height) * 100;
+                        const x2 = (pt2[0] / videoMetadata.width) * 100;
+                        const y2 = (pt2[1] / videoMetadata.height) * 100;
+
+                        return (
+                          <line
+                            key={sIdx}
+                            x1={`${x1}%`}
+                            y1={`${y1}%`}
+                            x2={`${x2}%`}
+                            y2={`${y2}%`}
+                            stroke="#ef4444"
+                            strokeWidth="0.45"
+                            strokeDasharray="1.2,1.2"
+                            className="opacity-90"
+                          />
+                        );
+                      })}
+
+                      {/* Warped Curved Futsal Left Penalty D-Arc */}
+                      {(() => {
+                        const pointsStr = getLeftPenaltyAreaPoints(H_inv);
+                        if (!pointsStr) return null;
+                        return (
+                          <polygon
+                            points={pointsStr}
+                            fill="none"
+                            stroke="#ef4444"
+                            strokeWidth="0.45"
+                            strokeDasharray="1.2,1.2"
+                            className="opacity-90"
+                          />
+                        );
+                      })()}
+
+                      {/* Warped Curved Futsal Right Penalty D-Arc */}
+                      {(() => {
+                        const pointsStr = getRightPenaltyAreaPoints(H_inv);
+                        if (!pointsStr) return null;
+                        return (
+                          <polygon
+                            points={pointsStr}
+                            fill="none"
+                            stroke="#ef4444"
+                            strokeWidth="0.45"
+                            strokeDasharray="1.2,1.2"
+                            className="opacity-90"
+                          />
+                        );
+                      })()}
+
+                      {/* Warped Center Dot projected at (15.0, 8.0) */}
+                      {(() => {
+                        const projected = projectPoint(15.0, 8.0, H_inv);
+                        if (!projected) return null;
+                        const sx = (projected[0] / videoMetadata.width) * 100;
+                        const sy = (projected[1] / videoMetadata.height) * 100;
+                        return (
+                          <circle
+                            cx={`${sx}%`}
+                            cy={`${sy}%`}
+                            r="0.5"
+                            fill="#ef4444"
+                            className="opacity-90 animate-pulse"
+                          />
+                        );
+                      })()}
+
+                      {/* Left Penalty Dot outside arc at (6, 8) */}
+                      {(() => {
+                        const projected = projectPoint(6.0, 8.0, H_inv);
+                        if (!projected) return null;
+                        const sx = (projected[0] / videoMetadata.width) * 100;
+                        const sy = (projected[1] / videoMetadata.height) * 100;
+                        return (
+                          <circle
+                            cx={`${sx}%`}
+                            cy={`${sy}%`}
+                            r="0.5"
+                            fill="#ef4444"
+                            className="opacity-90 animate-pulse"
+                          />
+                        );
+                      })()}
+
+                      {/* Right Penalty Dot outside arc at (24, 8) */}
+                      {(() => {
+                        const projected = projectPoint(24.0, 8.0, H_inv);
+                        if (!projected) return null;
+                        const sx = (projected[0] / videoMetadata.width) * 100;
+                        const sy = (projected[1] / videoMetadata.height) * 100;
+                        return (
+                          <circle
+                            cx={`${sx}%`}
+                            cy={`${sy}%`}
+                            r="0.5"
+                            fill="#ef4444"
+                            className="opacity-90 animate-pulse"
+                          />
+                        );
+                      })()}
+                    </svg>
+                  )}
+
                   {/* Calibration Pin overlays inside the zoomed container */}
                   {isCalibratingMode && Object.entries(calibrationPoints).map(([id, pt]) => {
                     const isActive = id === selectedLandmarkId;
@@ -657,72 +827,6 @@ export const UploadView: React.FC = () => {
                       </div>
                     );
                   })}
-
-                  {/* Projected Warped Calibration Grid Overlay (Draws inside zoomed space, in RED) */}
-                  {isCalibratingMode && showGridOverlay && H_inv && (
-                    <svg 
-                      className="absolute inset-0 w-full h-full pointer-events-none z-10"
-                      viewBox="0 0 100 100"
-                      preserveAspectRatio="none"
-                    >
-                      {/* Warped Pitch Lines */}
-                      {pitchSegments.map((seg, sIdx) => {
-                        const pt1 = projectPoint(seg.rx1, seg.ry1, H_inv);
-                        const pt2 = projectPoint(seg.rx2, seg.ry2, H_inv);
-                        if (!pt1 || !pt2) return null;
-                        
-                        const x1 = (pt1[0] / videoMetadata.width) * 100;
-                        const y1 = (pt1[1] / videoMetadata.height) * 100;
-                        const x2 = (pt2[0] / videoMetadata.width) * 100;
-                        const y2 = (pt2[1] / videoMetadata.height) * 100;
-
-                        return (
-                          <line
-                            key={sIdx}
-                            x1={`${x1}%`}
-                            y1={`${y1}%`}
-                            x2={`${x2}%`}
-                            y2={`${y2}%`}
-                            stroke="#ef4444"
-                            strokeWidth="0.4"
-                            strokeDasharray="1.2,1.2"
-                            className="opacity-90"
-                          />
-                        );
-                      })}
-
-                      {/* Warped Center Circle approximated as 36-segment polygon */}
-                      {(() => {
-                        const cx = 15.0;
-                        const cy = 8.0;
-                        const r = 3.5; // Center circle radius in meters
-                        const points: [number, number][] = [];
-                        for (let i = 0; i <= 36; i++) {
-                          const theta = (i / 36) * Math.PI * 2;
-                          const rx = cx + r * Math.cos(theta);
-                          const ry = cy + r * Math.sin(theta);
-                          const projected = projectPoint(rx, ry, H_inv);
-                          if (projected) {
-                            const sx = (projected[0] / videoMetadata.width) * 100;
-                            const sy = (projected[1] / videoMetadata.height) * 100;
-                            points.push([sx, sy]);
-                          }
-                        }
-                        if (points.length < 3) return null;
-                        const pointsStr = points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
-                        return (
-                          <polygon
-                            points={pointsStr}
-                            fill="none"
-                            stroke="#ef4444"
-                            strokeWidth="0.4"
-                            strokeDasharray="1.2,1.2"
-                            className="opacity-90"
-                          />
-                        );
-                      })()}
-                    </svg>
-                  )}
                 </div>
 
                 {/* Corner indicator overlay (Only visible in normal video preview mode) */}
@@ -831,24 +935,45 @@ export const UploadView: React.FC = () => {
                         </p>
                       </div>
 
-                      {/* Interactive 2D Pitch Landmark Checklist */}
+                      {/* Interactive 2D Pitch Landmark Checklist (Curved D-Penalty Areas) */}
                       <div className="space-y-2">
                         <label className="text-[10px] text-gray-500 font-black tracking-widest uppercase block font-mono">
                           1. Click Spot on Field ({calibratedCount}/4+ points)
                         </label>
                         
-                        <div className="relative rounded-2xl overflow-hidden border border-gray-800 aspect-[30/16] w-full shadow-inner bg-[#04160f] p-2 select-none">
-                          {/* Green Pitch Boundary lines */}
-                          <div className="absolute inset-2 border border-emerald-800/40 rounded">
-                            {/* Center Line */}
-                            <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 border-l border-emerald-800/40" />
-                            {/* Center Circle */}
-                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[24%] h-[45%] rounded-full border border-emerald-800/40" />
-                            {/* Left Penalty Area */}
-                            <div className="absolute top-[20%] bottom-[20%] left-0 w-[15%] border-t border-b border-r border-emerald-800/40" />
-                            {/* Right Penalty Area */}
-                            <div className="absolute top-[20%] bottom-[20%] right-0 w-[15%] border-t border-b border-l border-emerald-800/40" />
-                          </div>
+                        <div className="relative rounded-2xl overflow-hidden border border-gray-800 aspect-[30/16] w-full shadow-inner bg-[#04160f] select-none p-0">
+                          {/* Pitch Lines Vector Layer */}
+                          <svg
+                            className="absolute inset-0 w-full h-full pointer-events-none"
+                            viewBox="0 0 300 160"
+                            fill="none"
+                          >
+                            {/* Outer boundary */}
+                            <rect x="8" y="8" width="284" height="144" stroke="#065f46" strokeWidth="1.5" className="opacity-45" />
+                            
+                            {/* Center Dot */}
+                            <circle cx="150" cy="80" r="2.5" fill="#065f46" className="opacity-45" />
+
+                            {/* Left Curved Penalty Box (radius 50px centered on goalposts at y=65, y=95) */}
+                            <path
+                              d="M 8,15 A 50,50 0 0,1 58,65 L 58,95 A 50,50 0 0,1 8,145"
+                              stroke="#065f46"
+                              strokeWidth="1.5"
+                              className="opacity-45"
+                            />
+                            {/* Left Penalty Dot outside arc at x=68 (6m), y=80 */}
+                            <circle cx="68" cy="80" r="2.5" fill="#065f46" className="opacity-45" />
+
+                            {/* Right Curved Penalty Box */}
+                            <path
+                              d="M 292,15 A 50,50 0 0,0 242,65 L 242,95 A 50,50 0 0,0 292,145"
+                              stroke="#065f46"
+                              strokeWidth="1.5"
+                              className="opacity-45"
+                            />
+                            {/* Right Penalty Dot outside arc at x=232 (24m) */}
+                            <circle cx="232" cy="80" r="2.5" fill="#065f46" className="opacity-45" />
+                          </svg>
 
                           {/* Landmarks interactive overlay dots */}
                           {landmarks.map((l, idx) => {
@@ -935,7 +1060,7 @@ export const UploadView: React.FC = () => {
                           <span className="text-[9px] text-gray-500 font-black tracking-widest uppercase block font-mono">
                             2. Calibrated Details
                           </span>
-                          <div className="max-h-[85px] overflow-y-auto rounded-xl border border-gray-855 p-2 space-y-1 text-[10px] font-mono">
+                          <div className="max-h-[85px] overflow-y-auto rounded-xl border border-gray-850 p-2 space-y-1 text-[10px] font-mono">
                             {landmarks.map((l, idx) => {
                               const pt = calibrationPoints[l.id];
                               if (!pt) return null;

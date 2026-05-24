@@ -9,19 +9,6 @@ const pitchSegments = [
   { rx1: 0, ry1: 0, rx2: 0, ry2: 16 },
   { rx1: 30, ry1: 0, rx2: 30, ry2: 16 },
 
-  // Center line
-  { rx1: 15, ry1: 0, rx2: 15, ry2: 16 },
-
-  // Left Penalty Box
-  { rx1: 0, ry1: 3.2, rx2: 4.5, ry2: 3.2 },
-  { rx1: 4.5, ry1: 3.2, rx2: 4.5, ry2: 12.8 },
-  { rx1: 4.5, ry1: 12.8, rx2: 0, ry2: 12.8 },
-
-  // Right Penalty Box
-  { rx1: 30, ry1: 3.2, rx2: 25.5, ry2: 3.2 },
-  { rx1: 25.5, ry1: 3.2, rx2: 25.5, ry2: 12.8 },
-  { rx1: 25.5, ry1: 12.8, rx2: 30, ry2: 12.8 },
-
   // Left Goal posts
   { rx1: 0, ry1: 6.5, rx2: 0, ry2: 9.5 },
   // Right Goal posts
@@ -142,6 +129,73 @@ export const DashboardView: React.FC = () => {
   const selectedPlayer = results.players.find(p => p.id === selectedPlayerId);
   const H_inv = currentHomography ? invert3x3(currentHomography) : null;
 
+  // Manually approximate curved D-penalty areas for the warped vector overlay
+  const getLeftPenaltyAreaPoints = (H_matrix: number[][]) => {
+    if (!results) return '';
+    const points: [number, number][] = [];
+    const r = 5.0; // 5.0m arc radius
+    // Top quarter-arc centered at top post (0, 6.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = -Math.PI / 2 + (i / 12) * (Math.PI / 2);
+      const rx = r * Math.cos(theta);
+      const ry = 6.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / results.metadata.width) * 100,
+          (projected[1] / results.metadata.height) * 100
+        ]);
+      }
+    }
+    // Bottom quarter-arc centered at bottom post (0, 9.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = (i / 12) * (Math.PI / 2);
+      const rx = r * Math.cos(theta);
+      const ry = 9.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / results.metadata.width) * 100,
+          (projected[1] / results.metadata.height) * 100
+        ]);
+      }
+    }
+    return points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+  };
+
+  const getRightPenaltyAreaPoints = (H_matrix: number[][]) => {
+    if (!results) return '';
+    const points: [number, number][] = [];
+    const r = 5.0; // 5.0m arc radius
+    // Top quarter-arc centered at (30, 6.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = -Math.PI / 2 - (i / 12) * (Math.PI / 2);
+      const rx = 30.0 + r * Math.cos(theta);
+      const ry = 6.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / results.metadata.width) * 100,
+          (projected[1] / results.metadata.height) * 100
+        ]);
+      }
+    }
+    // Bottom quarter-arc centered at (30, 9.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = Math.PI - (i / 12) * (Math.PI / 2);
+      const rx = 30.0 + r * Math.cos(theta);
+      const ry = 9.5 + r * Math.sin(theta);
+      const projected = projectPoint(rx, ry, H_matrix);
+      if (projected) {
+        points.push([
+          (projected[0] / results.metadata.width) * 100,
+          (projected[1] / results.metadata.height) * 100
+        ]);
+      }
+    }
+    return points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+  };
+
   // Render the miniature tactical pitch canvas overlay showing player trajectory
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -172,16 +226,7 @@ export const DashboardView: React.FC = () => {
     ctx.lineWidth = 2;
     ctx.strokeRect(pad, pad, cw, ch);
 
-    // Center Line
-    ctx.beginPath();
-    ctx.moveTo(pad + cw / 2, pad);
-    ctx.lineTo(pad + cw / 2, pad + ch);
-    ctx.stroke();
 
-    // Center Circle
-    ctx.beginPath();
-    ctx.arc(pad + cw / 2, pad + ch / 2, ch * 0.2, 0, 2 * Math.PI);
-    ctx.stroke();
 
     // Kickoff spot
     ctx.fillStyle = '#40916c';
@@ -189,10 +234,61 @@ export const DashboardView: React.FC = () => {
     ctx.arc(pad + cw / 2, pad + ch / 2, 4, 0, 2 * Math.PI);
     ctx.fill();
 
-    // Left Penalty Box
-    ctx.strokeRect(pad, pad + ch * 0.2, cw * 0.15, ch * 0.6);
-    // Right Penalty Box
-    ctx.strokeRect(pad + cw - cw * 0.15, pad + ch * 0.2, cw * 0.15, ch * 0.6);
+    // Left Penalty Box (Curved Futsal D-Arc)
+    ctx.beginPath();
+    // Top quarter-arc centered at top post (0, 6.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = -Math.PI / 2 + (i / 12) * (Math.PI / 2);
+      const rx = 5.0 * Math.cos(theta);
+      const ry = 6.5 + 5.0 * Math.sin(theta);
+      if (i === 0) {
+        ctx.moveTo(scaleX(rx), scaleY(ry));
+      } else {
+        ctx.lineTo(scaleX(rx), scaleY(ry));
+      }
+    }
+    // Bottom quarter-arc centered at bottom post (0, 9.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = (i / 12) * (Math.PI / 2);
+      const rx = 5.0 * Math.cos(theta);
+      const ry = 9.5 + 5.0 * Math.sin(theta);
+      ctx.lineTo(scaleX(rx), scaleY(ry));
+    }
+    ctx.stroke();
+
+    // Left Penalty Dot outside arc at (6, 8)
+    ctx.fillStyle = '#2d6a4f';
+    ctx.beginPath();
+    ctx.arc(scaleX(6.0), scaleY(8.0), 3, 0, 2 * Math.PI);
+    ctx.fill();
+
+    // Right Penalty Box (Curved Futsal D-Arc)
+    ctx.beginPath();
+    // Top quarter-arc centered at (30, 6.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = -Math.PI / 2 - (i / 12) * (Math.PI / 2);
+      const rx = 30.0 + 5.0 * Math.cos(theta);
+      const ry = 6.5 + 5.0 * Math.sin(theta);
+      if (i === 0) {
+        ctx.moveTo(scaleX(rx), scaleY(ry));
+      } else {
+        ctx.lineTo(scaleX(rx), scaleY(ry));
+      }
+    }
+    // Bottom quarter-arc centered at (30, 9.5)
+    for (let i = 0; i <= 12; i++) {
+      const theta = Math.PI - (i / 12) * (Math.PI / 2);
+      const rx = 30.0 + 5.0 * Math.cos(theta);
+      const ry = 9.5 + 5.0 * Math.sin(theta);
+      ctx.lineTo(scaleX(rx), scaleY(ry));
+    }
+    ctx.stroke();
+
+    // Right Penalty Dot outside arc at (24, 8)
+    ctx.fillStyle = '#2d6a4f';
+    ctx.beginPath();
+    ctx.arc(scaleX(24.0), scaleY(8.0), 3, 0, 2 * Math.PI);
+    ctx.fill();
 
     // 1. Plot Selected Player Trajectory Growing Trail
     if (selectedPlayer && selectedPlayer.path && selectedPlayer.path.length > 0) {
@@ -405,25 +501,10 @@ export const DashboardView: React.FC = () => {
                   );
                 })}
 
-                {/* Warped Center Circle approximated as 36-segment polygon */}
+                {/* Warped Curved Futsal Left Penalty D-Arc */}
                 {(() => {
-                  const cx = 15.0;
-                  const cy = 8.0;
-                  const r = 3.5;
-                  const points: [number, number][] = [];
-                  for (let i = 0; i <= 36; i++) {
-                    const theta = (i / 36) * Math.PI * 2;
-                    const rx = cx + r * Math.cos(theta);
-                    const ry = cy + r * Math.sin(theta);
-                    const projected = projectPoint(rx, ry, H_inv);
-                    if (projected) {
-                      const sx = (projected[0] / results.metadata.width) * 100;
-                      const sy = (projected[1] / results.metadata.height) * 100;
-                      points.push([sx, sy]);
-                    }
-                  }
-                  if (points.length < 3) return null;
-                  const pointsStr = points.map(pt => `${pt[0]},${pt[1]}`).join(' ');
+                  const pointsStr = getLeftPenaltyAreaPoints(H_inv);
+                  if (!pointsStr) return null;
                   return (
                     <polygon
                       points={pointsStr}
@@ -432,6 +513,73 @@ export const DashboardView: React.FC = () => {
                       strokeWidth="0.45"
                       strokeDasharray="1.2,1.2"
                       className="opacity-90"
+                    />
+                  );
+                })()}
+
+                {/* Warped Curved Futsal Right Penalty D-Arc */}
+                {(() => {
+                  const pointsStr = getRightPenaltyAreaPoints(H_inv);
+                  if (!pointsStr) return null;
+                  return (
+                    <polygon
+                      points={pointsStr}
+                      fill="none"
+                      stroke="#ef4444"
+                      strokeWidth="0.45"
+                      strokeDasharray="1.2,1.2"
+                      className="opacity-90"
+                    />
+                  );
+                })()}
+
+                {/* Warped Center Dot projected at (15.0, 8.0) */}
+                {(() => {
+                  const projected = projectPoint(15.0, 8.0, H_inv);
+                  if (!projected) return null;
+                  const sx = (projected[0] / results.metadata.width) * 100;
+                  const sy = (projected[1] / results.metadata.height) * 100;
+                  return (
+                    <circle
+                      cx={`${sx}%`}
+                      cy={`${sy}%`}
+                      r="0.5"
+                      fill="#ef4444"
+                      className="opacity-90 animate-pulse"
+                    />
+                  );
+                })()}
+
+                {/* Left Penalty Dot outside arc at (6, 8) */}
+                {(() => {
+                  const projected = projectPoint(6.0, 8.0, H_inv);
+                  if (!projected) return null;
+                  const sx = (projected[0] / results.metadata.width) * 100;
+                  const sy = (projected[1] / results.metadata.height) * 100;
+                  return (
+                    <circle
+                      cx={`${sx}%`}
+                      cy={`${sy}%`}
+                      r="0.5"
+                      fill="#ef4444"
+                      className="opacity-90 animate-pulse"
+                    />
+                  );
+                })()}
+
+                {/* Right Penalty Dot outside arc at (24, 8) */}
+                {(() => {
+                  const projected = projectPoint(24.0, 8.0, H_inv);
+                  if (!projected) return null;
+                  const sx = (projected[0] / results.metadata.width) * 100;
+                  const sy = (projected[1] / results.metadata.height) * 100;
+                  return (
+                    <circle
+                      cx={`${sx}%`}
+                      cy={`${sy}%`}
+                      r="0.5"
+                      fill="#ef4444"
+                      className="opacity-90 animate-pulse"
                     />
                   );
                 })()}
