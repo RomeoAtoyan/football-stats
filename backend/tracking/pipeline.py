@@ -127,7 +127,7 @@ def run_tracking_pipeline(
             classes=[0, 32],
             conf=0.10, # Lowered to 0.10 to allow ByteTrack's two-stage low-thresh association to resolve occlusions
             iou=0.60,
-            imgsz=(height, width), # Dynamic native video resolution for pixel-perfect tracking (ready for RTX 4070 / 4090)
+            imgsz=1600, # Reverted back to 1600 (rectangular 16:9 stretching in native 1920x1080 caused YOLO feature distortion)
             verbose=False
         )
         
@@ -157,10 +157,9 @@ def run_tracking_pipeline(
                     
                     rx, ry = pixel_to_meter(foot_x, foot_y, homography_matrix)
                     
-                    # Filter out players on the neighboring field or background
-                    # Our field coordinates are 0 <= rx <= 30 and 0 <= ry <= 16.
-                    # We allow a margin (+-3.5m on goals, +-2m on touchlines) for out-of-bounds play
-                    if not (-3.5 <= rx <= 33.5 and -2.0 <= ry <= 18.0):
+                    # Filter out players on the neighboring field in the background (far behind top touchline ry = 0)
+                    # We only check ry >= -4.5 to avoid dropping our own players/goalkeeper due to side homography coordinate distortions.
+                    if ry < -4.5:
                         continue
                     
                     # Smooth trajectory with Kalman filter
