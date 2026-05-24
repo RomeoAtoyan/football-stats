@@ -25,7 +25,7 @@ export const DashboardView: React.FC = () => {
 
   // Render the miniature tactical pitch canvas overlay showing player trajectory
   useEffect(() => {
-    if (!canvasRef.current || !selectedPlayer) return;
+    if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -75,43 +75,83 @@ export const DashboardView: React.FC = () => {
     // Right Penalty Box
     ctx.strokeRect(pad + cw - cw * 0.15, pad + ch * 0.2, cw * 0.15, ch * 0.6);
 
-    // Plot Player Trajectory Path
-    if (selectedPlayer.path && selectedPlayer.path.length > 0) {
-      const isTeamA = selectedPlayer.team === 'A';
+    // 1. Plot Selected Player Trajectory Growing Trail
+    if (selectedPlayer && selectedPlayer.path && selectedPlayer.path.length > 0) {
+      // Filter path up to the current frame playing in the video
+      const livePath = selectedPlayer.path.filter(pt => pt.frame <= currentFrame);
       
-      // Bounding glow path color matches team (Purple vs Aqua)
-      const pathColor = isTeamA ? '#a855f7' : '#06b6d4';
-      
-      ctx.strokeStyle = pathColor;
-      ctx.lineWidth = 3;
-      ctx.shadowColor = pathColor;
-      ctx.shadowBlur = 8;
+      if (livePath.length > 0) {
+        const isTeamA = selectedPlayer.team === 'A';
+        const pathColor = isTeamA ? '#a855f7' : '#06b6d4';
+        
+        ctx.strokeStyle = pathColor;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = pathColor;
+        ctx.shadowBlur = 8;
 
-      ctx.beginPath();
-      const firstPt = selectedPlayer.path[0];
-      ctx.moveTo(scaleX(firstPt.x), scaleY(firstPt.y));
+        ctx.beginPath();
+        const firstPt = livePath[0];
+        ctx.moveTo(scaleX(firstPt.x), scaleY(firstPt.y));
 
-      for (let i = 1; i < selectedPlayer.path.length; i++) {
-        const pt = selectedPlayer.path[i];
-        ctx.lineTo(scaleX(pt.x), scaleY(pt.y));
+        for (let i = 1; i < livePath.length; i++) {
+          const pt = livePath[i];
+          ctx.lineTo(scaleX(pt.x), scaleY(pt.y));
+        }
+        ctx.stroke();
+
+        // Draw start coordinate (Green circle)
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(scaleX(firstPt.x), scaleY(firstPt.y), 5, 0, 2 * Math.PI);
+        ctx.fill();
       }
+    }
+
+    // 2. Draw ALL active players at the current frame in 2D top view
+    const activeDetections = results.frames[String(currentFrame)] || results.frames[currentFrame] || [];
+    activeDetections.forEach((det) => {
+      const isTeamA = det.team === 'A';
+      if (isTeamA && !showTeamA) return;
+      if (!isTeamA && !showTeamB) return;
+
+      const [rx, ry] = det.real;
+      // Clamp coordinates to pitch bounds to prevent out-of-bounds drawing due to calibration offsets
+      const cx = Math.max(0, Math.min(pmw, rx));
+      const cy = Math.max(0, Math.min(pmh, ry));
+
+      const px = scaleX(cx);
+      const py = scaleY(cy);
+      const color = isTeamA ? '#a855f7' : '#06b6d4';
+      const isSelected = det.id === selectedPlayerId;
+
+      // Draw player circle/dot
+      ctx.shadowBlur = isSelected ? 12 : 0;
+      ctx.shadowColor = color;
+      ctx.strokeStyle = isSelected ? '#ffffff' : color;
+      ctx.lineWidth = isSelected ? 2.5 : 1.5;
+      ctx.fillStyle = isTeamA ? 'rgba(168, 85, 247, 0.9)' : 'rgba(6, 182, 212, 0.9)';
+      
+      ctx.beginPath();
+      ctx.arc(px, py, isSelected ? 7 : 5, 0, 2 * Math.PI);
+      ctx.fill();
       ctx.stroke();
 
-      // Draw start coordinate (Green circle)
+      // Label player ID inside/above circle
       ctx.shadowBlur = 0;
-      ctx.fillStyle = '#10b981';
-      ctx.beginPath();
-      ctx.arc(scaleX(firstPt.x), scaleY(firstPt.y), 5, 0, 2 * Math.PI);
-      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 8.5px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
 
-      // Draw end coordinate (Red circle)
-      const lastPt = selectedPlayer.path[selectedPlayer.path.length - 1];
-      ctx.fillStyle = '#ef4444';
-      ctx.beginPath();
-      ctx.arc(scaleX(lastPt.x), scaleY(lastPt.y), 5, 0, 2 * Math.PI);
-      ctx.fill();
-    }
-  }, [selectedPlayerId]);
+      if (isSelected) {
+        ctx.fillText(String(det.id), px, py);
+      } else {
+        ctx.fillText(`P${det.id}`, px, py - 9);
+      }
+    });
+
+  }, [selectedPlayerId, currentFrame, showTeamA, showTeamB, results, selectedPlayer]);
 
   return (
     <div className="flex flex-col h-[calc(100vh-76px)] overflow-hidden">
@@ -308,6 +348,29 @@ export const DashboardView: React.FC = () => {
               </div>
             </div>
 
+            {/* Persistent 2D Pitch Top-down Live Map */}
+            <div className="space-y-1.5 pt-1">
+              <span className="text-[9px] text-gray-500 font-black tracking-widest uppercase block font-mono">
+                2D Pitch Top-down Live Map
+              </span>
+              <div className="relative rounded-2xl overflow-hidden border border-gray-850 aspect-[30/16] w-full shadow-inner bg-black">
+                <canvas 
+                  ref={canvasRef} 
+                  width={300} 
+                  height={160}
+                  className="w-full h-full"
+                />
+                <div className="absolute top-2 left-2 flex items-center gap-1 pointer-events-none px-1.5 py-0.5 rounded bg-black/70 border border-white/5 text-[8px] font-bold text-emerald-400">
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                  Live Tactical view
+                </div>
+              </div>
+              <div className="flex justify-between text-[8px] font-bold text-gray-500 uppercase tracking-widest px-1 font-mono">
+                <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Start (t=0)</span>
+                <span className="flex items-center gap-1">End (t=end) <span className="w-1.5 h-1.5 rounded-full bg-red-500" /></span>
+              </div>
+            </div>
+
             {/* Selected Player Metric Overlay */}
             {selectedPlayer ? (
               <div className="space-y-4 border-t border-gray-850/50 pt-4 animate-fade-in">
@@ -340,29 +403,6 @@ export const DashboardView: React.FC = () => {
                   <div className="p-2.5 rounded-xl bg-gray-950/20 border border-gray-850">
                     <span className="text-[8px] text-gray-500 block uppercase tracking-wider font-bold">TOP SPEED</span>
                     <span className="font-black text-xs text-amber-400">{selectedPlayer.topSpeed} km/h</span>
-                  </div>
-                </div>
-
-                {/* Tactical Mini Pitch Canvas Path */}
-                <div className="space-y-1.5 pt-1">
-                  <span className="text-[9px] text-gray-500 font-black tracking-widest uppercase block font-mono">
-                    2D Pitch Trajectory Trails
-                  </span>
-                  <div className="relative rounded-2xl overflow-hidden border border-gray-850 aspect-[30/16] w-full shadow-inner bg-black">
-                    <canvas 
-                      ref={canvasRef} 
-                      width={300} 
-                      height={160}
-                      className="w-full h-full"
-                    />
-                    <div className="absolute top-2 left-2 flex items-center gap-1 pointer-events-none px-1.5 py-0.5 rounded bg-black/70 border border-white/5 text-[8px] font-bold text-emerald-400">
-                      <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
-                      Active Trail Map
-                    </div>
-                  </div>
-                  <div className="flex justify-between text-[8px] font-bold text-gray-500 uppercase tracking-widest px-1 font-mono">
-                    <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Start (t=0)</span>
-                    <span className="flex items-center gap-1">End (t=end) <span className="w-1.5 h-1.5 rounded-full bg-red-500" /></span>
                   </div>
                 </div>
               </div>

@@ -1,6 +1,32 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { usePitchTrackStore } from '../store/pitchtrackStore';
-import { Upload, Film, ArrowRight, Loader2 } from 'lucide-react';
+import { 
+  Upload, Film, ArrowRight, Loader2, Check, RotateCcw, 
+  Crosshair, Settings, ZoomIn, ZoomOut, Move, Hand, Info, Trash2, X
+} from 'lucide-react';
+
+interface CalibrationPointData {
+  screenX: number; // Percentage coordinate for overlay drawing
+  screenY: number; // Percentage coordinate for overlay drawing
+  pixel: [number, number]; // Actual video resolution coordinates
+  real: [number, number]; // Real-world meter coordinates [rx, ry]
+}
+
+const landmarks = [
+  { id: 'left_top_corner', name: 'Left-Top Corner (0m, 0m)', real: [0.0, 0.0] as [number, number] },
+  { id: 'left_bottom_corner', name: 'Left-Bottom Corner (0m, 16m)', real: [0.0, 16.0] as [number, number] },
+  { id: 'left_goal_left_post', name: 'Left Goal, Left Post (0m, 6.5m)', real: [0.0, 6.5] as [number, number] },
+  { id: 'left_goal_right_post', name: 'Left Goal, Right Post (0m, 9.5m)', real: [0.0, 9.5] as [number, number] },
+  { id: 'left_goal_penalty_dot', name: 'Left Goal Penalty Dot (6m, 8m)', real: [6.0, 8.0] as [number, number] },
+  { id: 'center_spot', name: 'Center Spot / Dot (15m, 8m)', real: [15.0, 8.0] as [number, number] },
+  { id: 'center_top_intersect', name: 'Center-Top Line Intersect (15m, 0m)', real: [15.0, 0.0] as [number, number] },
+  { id: 'center_bottom_intersect', name: 'Center-Bottom Line Intersect (15m, 16m)', real: [15.0, 16.0] as [number, number] },
+  { id: 'right_goal_left_post', name: 'Right Goal, Left Post (30m, 6.5m)', real: [30.0, 6.5] as [number, number] },
+  { id: 'right_goal_right_post', name: 'Right Goal, Right Post (30m, 9.5m)', real: [30.0, 9.5] as [number, number] },
+  { id: 'right_goal_penalty_dot', name: 'Right Goal Penalty Dot (24m, 8m)', real: [24.0, 8.0] as [number, number] },
+  { id: 'right_top_corner', name: 'Right-Top Corner (30m, 0m)', real: [30.0, 0.0] as [number, number] },
+  { id: 'right_bottom_corner', name: 'Right-Bottom Corner (30m, 16m)', real: [30.0, 16.0] as [number, number] }
+];
 
 export const UploadView: React.FC = () => {
   const { 
@@ -16,6 +42,56 @@ export const UploadView: React.FC = () => {
 
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Calibration States
+  const [isCalibratingMode, setIsCalibratingMode] = useState(false);
+  const [selectedLandmarkId, setSelectedLandmarkId] = useState(landmarks[0].id);
+  const [calibrationPoints, setCalibrationPoints] = useState<Record<string, CalibrationPointData>>({});
+  const [isCalibrated, setCalibrated] = useState(false);
+  const [isCalibratingSaving, setIsCalibratingSaving] = useState(false);
+
+  // Zoom & Pan States
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [clickStart, setClickStart] = useState({ x: 0, y: 0 });
+
+  // Tool Controls
+  const [activeTool, setActiveTool] = useState<'crosshair' | 'hand'>('crosshair');
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [draggingPinId, setDraggingPinId] = useState<string | null>(null);
+
+  const activeLandmark = landmarks.find(l => l.id === selectedLandmarkId) || landmarks[0];
+  const effectiveTool = spacePressed ? 'hand' : activeTool;
+
+  // Keyboard Spacebar Pan Hold Shortcut
+  useEffect(() => {
+    if (!isCalibratingMode) return;
+    
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && e.target === document.body) {
+        e.preventDefault();
+        setSpacePressed(true);
+      }
+    };
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setSpacePressed(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [isCalibratingMode]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -49,6 +125,13 @@ export const UploadView: React.FC = () => {
 
   const uploadFile = async (file: File) => {
     setUploading(true);
+    setCalibrated(false);
+    setIsCalibratingMode(false);
+    setCalibrationPoints({});
+    setZoom(1);
+    setPanX(0);
+    setPanY(0);
+    
     const formData = new FormData();
     formData.append('file', file);
 
@@ -81,6 +164,196 @@ export const UploadView: React.FC = () => {
     }
   };
 
+  // Zoom controls
+  const adjustZoom = (amount: number) => {
+    setZoom(prev => {
+      const newZoom = Math.max(1, Math.min(8, prev + amount));
+      if (newZoom === 1) {
+        setPanX(0);
+        setPanY(0);
+      }
+      return newZoom;
+    });
+  };
+
+  // Cursor-Centric Scroll Wheel Zoom
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!isCalibratingMode) return;
+    e.preventDefault();
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const cursorX = e.clientX - rect.left;
+    const cursorY = e.clientY - rect.top;
+
+    const zoomFactor = 1.15;
+    const isZoomIn = e.deltaY < 0;
+
+    setZoom(prevZoom => {
+      const nextZoom = isZoomIn 
+        ? Math.min(8, prevZoom * zoomFactor) 
+        : Math.max(1, prevZoom / zoomFactor);
+
+      if (nextZoom === 1) {
+        setPanX(0);
+        setPanY(0);
+      } else {
+        setPanX(prevPanX => cursorX - (nextZoom / prevZoom) * (cursorX - prevPanX));
+        setPanY(prevPanY => cursorY - (nextZoom / prevZoom) * (cursorY - prevPanY));
+      }
+      return nextZoom;
+    });
+  };
+
+  // Pin drag selector handler
+  const handlePinMouseDown = (e: React.MouseEvent, landmarkId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDraggingPinId(landmarkId);
+    setSelectedLandmarkId(landmarkId);
+  };
+
+  // Container interaction handlers
+  const handleContainerMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCalibratingMode || e.button !== 0) return; // Left click only
+    
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    if (effectiveTool === 'hand') {
+      setIsDragging(true);
+      setDragStart({ x: e.clientX - panX, y: e.clientY - panY });
+    } else {
+      setClickStart({ x: e.clientX, y: e.clientY });
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCalibratingMode) return;
+
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    if (draggingPinId && videoMetadata) {
+      // Map coordinates precisely including active scale and translations (top-left origin math)
+      const xOrig = (clickX - panX) / zoom;
+      const yOrig = (clickY - panY) / zoom;
+
+      const screenX = Math.max(0, Math.min(100, (xOrig / rect.width) * 100));
+      const screenY = Math.max(0, Math.min(100, (yOrig / rect.height) * 100));
+
+      const actualX = (screenX / 100) * videoMetadata.width;
+      const actualY = (screenY / 100) * videoMetadata.height;
+
+      const landmark = landmarks.find(l => l.id === draggingPinId);
+      if (landmark) {
+        setCalibrationPoints(prev => ({
+          ...prev,
+          [draggingPinId]: {
+            screenX,
+            screenY,
+            pixel: [actualX, actualY],
+            real: landmark.real
+          }
+        }));
+      }
+    } else if (isDragging) {
+      setPanX(e.clientX - dragStart.x);
+      setPanY(e.clientY - dragStart.y);
+    }
+  };
+
+  const handleContainerMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCalibratingMode) return;
+
+    if (draggingPinId) {
+      setDraggingPinId(null);
+      return;
+    }
+
+    if (isDragging) {
+      setIsDragging(false);
+      return;
+    }
+
+    // Treat as click pin drop if click displacement is minimal
+    const dx = Math.abs(e.clientX - clickStart.x);
+    const dy = Math.abs(e.clientY - clickStart.y);
+    if (dx < 4 && dy < 4 && effectiveTool === 'crosshair' && videoMetadata) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      const xOrig = (clickX - panX) / zoom;
+      const yOrig = (clickY - panY) / zoom;
+
+      const screenX = (xOrig / rect.width) * 100;
+      const screenY = (yOrig / rect.height) * 100;
+
+      // Ensure coordinate lands on original image physical footprint
+      if (screenX >= 0 && screenX <= 100 && screenY >= 0 && screenY <= 100) {
+        const actualX = (screenX / 100) * videoMetadata.width;
+        const actualY = (screenY / 100) * videoMetadata.height;
+
+        setCalibrationPoints(prev => ({
+          ...prev,
+          [selectedLandmarkId]: {
+            screenX,
+            screenY,
+            pixel: [actualX, actualY],
+            real: activeLandmark.real
+          }
+        }));
+        
+        // Removed auto-advance logic as per user request to allow manual free-form selection
+      }
+    }
+  };
+
+  const handleMouseLeave = () => {
+    setIsDragging(false);
+    setDraggingPinId(null);
+  };
+
+  // Submit calibration coordinates
+  const saveCalibration = async () => {
+    const pointsData = Object.values(calibrationPoints);
+    if (pointsData.length < 4) return;
+    
+    setIsCalibratingSaving(true);
+    
+    try {
+      const response = await fetch('http://localhost:8000/api/calibrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ points: pointsData })
+      });
+      
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.detail || 'Calibration failed.');
+      }
+      
+      setCalibrated(true);
+      setIsCalibratingMode(false);
+      setZoom(1);
+      setPanX(0);
+      setPanY(0);
+      alert('Camera calibrated successfully! The tracking engine is now calibrated to your custom field landmarks.');
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || 'Failed to calibrate camera.');
+    } finally {
+      setIsCalibratingSaving(false);
+    }
+  };
+
   const startAnalysis = async () => {
     try {
       setProcessingStatus('processing');
@@ -103,141 +376,497 @@ export const UploadView: React.FC = () => {
     }
   };
 
+  const calibratedCount = Object.keys(calibrationPoints).length;
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-[75vh] px-6 py-12 max-w-5xl mx-auto w-full">
-      {/* Strategic Vision Intro Header */}
-      <div className="text-center mb-12 max-w-3xl">
+    <div className="flex flex-col items-center justify-center min-h-[75vh] px-6 py-12 max-w-6xl mx-auto w-full">
+      {/* Intro Header */}
+      <div className="text-center mb-10 max-w-3xl">
         <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-indigo-400 to-cyan-400 tracking-tight mb-4 uppercase">
           Tactical Player Vision
         </h1>
-        <p className="text-gray-400 text-base leading-relaxed">
+        <p className="text-gray-400 text-sm leading-relaxed">
           Upload any match video. Our AI tracking engine automatically detects players, clusters jersey colors, and groups players into teams. We visualize team paths in glowing <span className="text-purple-400 font-bold">Purple</span> & <span className="text-cyan-400 font-bold">Aqua</span> bounding boxes.
         </p>
       </div>
 
-      <div className="w-full max-w-3xl">
+      <div className="w-full">
         {!videoMetadata ? (
           /* Glassmorphic Dropzone */
-          <div
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            onClick={triggerFileInput}
-            className={`glass relative group flex flex-col items-center justify-center p-14 rounded-3xl border-2 border-dashed cursor-pointer transition-all duration-500 ${
-              dragActive 
-                ? 'border-purple-500 bg-purple-950/10 shadow-[0_0_40px_rgba(168,85,247,0.15)] scale-[1.01]' 
-                : 'border-gray-800 hover:border-purple-500/50 hover:bg-gray-900/30 hover:shadow-[0_0_30px_rgba(168,85,247,0.04)]'
-            }`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="video/mp4, video/quicktime, video/avi, video/mkv"
-              onChange={handleFileChange}
-              className="hidden"
-              disabled={isUploading}
-            />
-            
-            {isUploading ? (
-              <div className="flex flex-col items-center space-y-6 py-8">
-                <div className="relative">
-                  <div className="w-20 h-20 rounded-full border-4 border-purple-500/20 border-t-purple-500 animate-spin" />
-                  <Loader2 className="w-10 h-10 text-purple-400 animate-pulse absolute top-5 left-5" />
-                </div>
-                <div className="text-center">
-                  <h3 className="text-2xl font-black text-gray-100">Reading Video Stream...</h3>
-                  <p className="text-sm text-gray-500 mt-2 font-medium">Extracting match dimensions & calibration coordinates.</p>
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center space-y-6 text-center py-6">
-                <div className="w-24 h-24 rounded-2xl bg-purple-950/20 border border-purple-500/10 flex items-center justify-center text-purple-400 group-hover:scale-105 group-hover:bg-purple-950/30 group-hover:border-purple-500/30 transition-all duration-300">
-                  <Upload className="w-12 h-12" />
-                </div>
-                <div>
-                  <h3 className="text-2xl font-black text-gray-100 group-hover:text-purple-400 transition-colors">
-                    DRAG & DROP FOOTBALL VIDEO
-                  </h3>
-                  <p className="text-gray-400 mt-2 max-w-md text-sm leading-relaxed">
-                    Select any standard MP4 / AVI match recording. Local privacy is fully maintained.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-[0_4px_20px_rgba(168,85,247,0.35)] hover:shadow-[0_4px_25px_rgba(168,85,247,0.55)] active:scale-95 cursor-pointer"
-                >
-                  Browse Files
-                </button>
-              </div>
-            )}
-          </div>
-        ) : (
-          /* Thumbnail Preview Dashboard */
-          <div className="glass rounded-3xl overflow-hidden border border-gray-805 shadow-2xl animate-fade-in bg-gray-900/25">
-            <div className="grid grid-cols-1 md:grid-cols-2">
-              {/* Left Side: Extraction Thumbnail */}
-              <div className="relative aspect-video md:aspect-auto bg-black flex items-center justify-center overflow-hidden border-b md:border-b-0 md:border-r border-gray-850">
-                <img
-                  src={videoMetadata.firstFrameUrl}
-                  alt="Extraction frame"
-                  className="w-full h-full object-cover opacity-80"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-transparent to-transparent" />
-                <div className="absolute bottom-5 left-5 flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/60 border border-white/5 backdrop-blur-md">
-                  <Film className="w-4 h-4 text-purple-400" />
-                  <span className="text-xs font-black tracking-wider text-gray-200 uppercase">Frame 00:01</span>
-                </div>
-              </div>
-
-              {/* Right Side: Specs & Action Button */}
-              <div className="p-8 flex flex-col justify-between space-y-8">
-                <div>
-                  <span className="px-2 py-0.5 rounded text-[9px] font-black tracking-widest text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 uppercase">
-                    Stream Extracted
-                  </span>
-                  <h3 className="text-2xl font-black text-gray-100 mt-3 break-all line-clamp-1" title={videoMetadata.filename}>
-                    {videoMetadata.filename}
-                  </h3>
-                  
-                  {/* Dashboard stats list */}
-                  <div className="grid grid-cols-2 gap-4 mt-6">
-                    <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
-                      <span className="text-[10px] text-gray-500 font-bold block uppercase tracking-wider">Resolution</span>
-                      <span className="text-sm font-black text-gray-200">{videoMetadata.width} × {videoMetadata.height} px</span>
-                    </div>
-                    <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
-                      <span className="text-[10px] text-gray-500 font-bold block uppercase tracking-wider">Framerate</span>
-                      <span className="text-sm font-black text-gray-200">{videoMetadata.fps} FPS</span>
-                    </div>
-                    <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
-                      <span className="text-[10px] text-gray-500 font-bold block uppercase tracking-wider">Duration</span>
-                      <span className="text-sm font-black text-gray-200">
-                        {Math.floor(videoMetadata.duration / 60)}m {Math.floor(videoMetadata.duration % 60)}s
-                      </span>
-                    </div>
-                    <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
-                      <span className="text-[10px] text-gray-500 font-bold block uppercase tracking-wider">Frames</span>
-                      <span className="text-sm font-black text-gray-200">{videoMetadata.totalFrames} frames</span>
-                    </div>
+          <div className="w-full max-w-3xl mx-auto">
+            <div
+              onDragEnter={handleDrag}
+              onDragOver={handleDrag}
+              onDragLeave={handleDrag}
+              onDrop={handleDrop}
+              onClick={triggerFileInput}
+              className={`glass relative group flex flex-col items-center justify-center p-14 rounded-3xl border-2 border-dashed cursor-pointer transition-all duration-500 ${
+                dragActive 
+                  ? 'border-purple-500 bg-purple-950/10 shadow-[0_0_40px_rgba(168,85,247,0.15)] scale-[1.01]' 
+                  : 'border-gray-800 hover:border-purple-500/50 hover:bg-gray-900/30 hover:shadow-[0_0_30px_rgba(168,85,247,0.04)]'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/mp4, video/quicktime, video/avi, video/mkv"
+                onChange={handleFileChange}
+                className="hidden"
+                disabled={isUploading}
+              />
+              
+              {isUploading ? (
+                <div className="flex flex-col items-center space-y-6 py-8">
+                  <div className="relative">
+                    <div className="w-20 h-20 rounded-full border-4 border-purple-500/20 border-t-purple-500 animate-spin" />
+                    <Loader2 className="w-10 h-10 text-purple-400 animate-pulse absolute top-5 left-5" />
+                  </div>
+                  <div className="text-center">
+                    <h3 className="text-2xl font-black text-gray-100">Reading Video Stream...</h3>
+                    <p className="text-sm text-gray-500 mt-2 font-medium">Extracting match dimensions & calibration coordinates.</p>
                   </div>
                 </div>
-
-                <div className="flex flex-col sm:flex-row gap-3 pt-4">
+              ) : (
+                <div className="flex flex-col items-center space-y-6 text-center py-6">
+                  <div className="w-24 h-24 rounded-2xl bg-purple-950/20 border border-purple-500/10 flex items-center justify-center text-purple-400 group-hover:scale-105 group-hover:bg-purple-950/30 group-hover:border-purple-500/30 transition-all duration-300">
+                    <Upload className="w-12 h-12" />
+                  </div>
+                  <div>
+                    <h3 className="text-2xl font-black text-gray-100 group-hover:text-purple-400 transition-colors">
+                      DRAG & DROP FOOTBALL VIDEO
+                    </h3>
+                    <p className="text-gray-400 mt-2 max-w-md text-sm leading-relaxed">
+                      Select any standard MP4 / AVI match recording. Local privacy is fully maintained.
+                    </p>
+                  </div>
                   <button
-                    onClick={() => setVideoMetadata(null)}
-                    className="px-5 py-3.5 rounded-xl border border-gray-800 text-gray-400 hover:text-gray-200 hover:bg-gray-900/60 font-black text-xs uppercase tracking-wider transition-all cursor-pointer text-center"
+                    type="button"
+                    className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-[0_4px_20px_rgba(168,85,247,0.35)] hover:shadow-[0_4px_25px_rgba(168,85,247,0.55)] active:scale-95 cursor-pointer"
                   >
-                    Replace
-                  </button>
-                  <button
-                    onClick={startAnalysis}
-                    className="flex-1 flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-indigo-500 hover:to-cyan-400 text-white font-black text-xs uppercase tracking-wider transition-all shadow-[0_4px_20px_rgba(168,85,247,0.3)] hover:shadow-[0_4px_25px_rgba(168,85,247,0.55)] active:scale-[0.98] cursor-pointer"
-                  >
-                    Run Tracking & Team Clustering
-                    <ArrowRight className="w-4 h-4 text-cyan-300" />
+                    Browse Files
                   </button>
                 </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          /* Thumbnail Preview & Calibration Dashboard */
+          <div className="glass rounded-3xl overflow-hidden border border-gray-850 shadow-2xl animate-fade-in bg-gray-900/25">
+            <div className="grid grid-cols-1 lg:grid-cols-12">
+              
+              {/* Left Side: Extraction Thumbnail / Interactive Calibration Canvas (8 cols) */}
+              <div 
+                ref={containerRef}
+                onMouseDown={handleContainerMouseDown}
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleContainerMouseUp}
+                onMouseLeave={handleMouseLeave}
+                onWheel={handleWheel}
+                className={`lg:col-span-8 relative aspect-video bg-black flex items-center justify-center overflow-hidden border-b lg:border-b-0 lg:border-r border-gray-850 select-none ${
+                  isCalibratingMode 
+                    ? (draggingPinId 
+                        ? 'cursor-grabbing' 
+                        : (effectiveTool === 'hand' 
+                            ? (isDragging ? 'cursor-grabbing' : 'cursor-grab') 
+                            : 'cursor-crosshair')) 
+                    : ''
+                }`}
+              >
+                {/* Scaled/Zoomed Image Wrapper */}
+                <div
+                  className="w-full h-full relative transition-transform duration-75 ease-out"
+                  style={{
+                    transformOrigin: 'top left',
+                    transform: `translate(${panX}px, ${panY}px) scale(${zoom})`,
+                  }}
+                >
+                  <img
+                    src={videoMetadata.firstFrameUrl}
+                    alt="Extraction frame"
+                    className={`w-full h-full object-cover transition-opacity duration-300 ${
+                      isCalibratingMode ? 'opacity-95' : 'opacity-85'
+                    }`}
+                    draggable={false}
+                  />
+
+                  {/* Calibration Pin overlays inside the zoomed container */}
+                  {isCalibratingMode && Object.entries(calibrationPoints).map(([id, pt]) => {
+                    const isActive = id === selectedLandmarkId;
+                    const idx = landmarks.findIndex(l => l.id === id);
+                    return (
+                      <div
+                        key={id}
+                        onMouseDown={(e) => handlePinMouseDown(e, id)}
+                        className={`absolute w-7.5 h-7.5 rounded-full flex items-center justify-center text-[10.5px] font-black text-white shadow-xl border-[2.5px] border-white animate-scale-up cursor-grab active:cursor-grabbing hover:scale-110 transition-transform z-20 ${
+                          isActive 
+                            ? 'bg-purple-600 shadow-[0_0_15px_#a855f7]' 
+                            : 'bg-emerald-500 shadow-[0_0_12px_#10b981]'
+                        }`}
+                        style={{
+                          left: `${pt.screenX}%`,
+                          top: `${pt.screenY}%`,
+                          transform: 'translate(-50%, -50%)',
+                          fontFamily: 'monospace'
+                        }}
+                        title={`Drag to reposition ${landmarks[idx].name}`}
+                      >
+                        {idx + 1}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Corner indicator overlay (Only visible in normal video preview mode) */}
+                {!isCalibratingMode && (
+                  <div className="absolute top-4 left-4 pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-lg bg-black/60 border border-white/5 backdrop-blur-md">
+                    <Film className="w-4 h-4 text-purple-400" />
+                    <span className="text-xs font-black tracking-wider text-gray-200 uppercase font-mono">Frame 00:01</span>
+                  </div>
+                )}
+
+                {/* Interactive Zoom & Tool Selection Toolbar */}
+                {isCalibratingMode && (
+                  <div className="absolute bottom-4 left-4 flex items-center gap-2 p-1.5 rounded-xl bg-black/85 border border-white/5 backdrop-blur-md shadow-2xl">
+                    {/* Tool Switches */}
+                    <div className="flex gap-1 border-r border-gray-800 pr-1.5">
+                      <button
+                        onClick={() => setActiveTool('crosshair')}
+                        className={`p-2 rounded-lg transition-all cursor-pointer border ${
+                          effectiveTool === 'crosshair'
+                            ? 'bg-purple-950/40 border-purple-500/35 text-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.2)]'
+                            : 'bg-transparent border-transparent text-gray-400 hover:text-white hover:bg-gray-800'
+                        }`}
+                        title="Place Pins (Crosshair Tool)"
+                      >
+                        <Crosshair className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => setActiveTool('hand')}
+                        className={`p-2 rounded-lg transition-all cursor-pointer border ${
+                          effectiveTool === 'hand'
+                            ? 'bg-purple-950/40 border-purple-500/35 text-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.2)]'
+                            : 'bg-transparent border-transparent text-gray-400 hover:text-white hover:bg-gray-800'
+                        }`}
+                        title="Pan Canvas (Hand Tool / Hold Space)"
+                      >
+                        <Hand className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Manual Zoom Actions */}
+                    <button
+                      onClick={() => adjustZoom(0.5)}
+                      className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-all cursor-pointer border border-white/5 active:scale-90"
+                      title="Zoom In"
+                    >
+                      <ZoomIn className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => adjustZoom(-0.5)}
+                      disabled={zoom === 1}
+                      className="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:bg-gray-900 disabled:text-gray-600 disabled:cursor-not-allowed text-gray-300 hover:text-white transition-all cursor-pointer border border-white/5 active:scale-90"
+                      title="Zoom Out"
+                    >
+                      <ZoomOut className="w-4 h-4" />
+                    </button>
+                    <div className="flex items-center px-1.5 text-[10px] font-bold font-mono text-gray-400 min-w-[38px] justify-center">
+                      {zoom.toFixed(1)}x
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Right Side: Landmark Calibration Dashboard / Match Specs (4 cols) */}
+              <div className="lg:col-span-4 p-6 flex flex-col justify-between min-h-[460px] bg-gray-900/10 text-gray-200">
+                
+                {isCalibratingMode ? (
+                  /* Calibration Mode Active */
+                  <div className="space-y-4 flex flex-col justify-between flex-1">
+                    <div className="space-y-4">
+                      <div>
+                        <span className="px-2 py-0.5 rounded text-[9px] font-black tracking-widest text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 uppercase font-mono">
+                          Rigid Calibration
+                        </span>
+                        <h3 className="text-xl font-black text-gray-100 mt-2">
+                          Point Landmarking
+                        </h3>
+                        <p className="text-gray-400 mt-1 text-[11px] leading-relaxed">
+                          Click on the visual football field points below to select a landmark, then pin it exactly on the match frame.
+                        </p>
+                      </div>
+
+                      {/* Interactive 2D Pitch Landmark Checklist */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] text-gray-500 font-black tracking-widest uppercase block font-mono">
+                          1. Click Spot on Field ({calibratedCount}/4+ points)
+                        </label>
+                        
+                        <div className="relative rounded-2xl overflow-hidden border border-gray-800 aspect-[30/16] w-full shadow-inner bg-[#04160f] p-2 select-none">
+                          {/* Green Pitch Boundary lines */}
+                          <div className="absolute inset-2 border border-emerald-800/40 rounded">
+                            {/* Center Line */}
+                            <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 border-l border-emerald-800/40" />
+                            {/* Center Circle */}
+                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[24%] h-[45%] rounded-full border border-emerald-800/40" />
+                            {/* Left Penalty Area */}
+                            <div className="absolute top-[20%] bottom-[20%] left-0 w-[15%] border-t border-b border-r border-emerald-800/40" />
+                            {/* Right Penalty Area */}
+                            <div className="absolute top-[20%] bottom-[20%] right-0 w-[15%] border-t border-b border-l border-emerald-800/40" />
+                          </div>
+
+                          {/* Landmarks interactive overlay dots */}
+                          {landmarks.map((l, idx) => {
+                            const rx = l.real[0];
+                            const ry = l.real[1];
+                            
+                            // Map coordinates to percentage layout with slight margin padding
+                            const padX = 8;
+                            const padY = 8;
+                            const xPct = padX + (rx / 30) * (100 - padX * 2);
+                            const yPct = padY + (ry / 16) * (100 - padY * 2);
+
+                            const pt = calibrationPoints[l.id];
+                            const isActive = selectedLandmarkId === l.id;
+                            const isCalibrated = !!pt;
+
+                            return (
+                              <button
+                                key={l.id}
+                                type="button"
+                                onClick={() => setSelectedLandmarkId(l.id)}
+                                className={`absolute w-5.5 h-5.5 rounded-full border -translate-x-1/2 -translate-y-1/2 flex items-center justify-center text-[9px] font-black font-mono text-white transition-all duration-300 hover:scale-120 active:scale-95 cursor-pointer z-10 ${
+                                  isActive
+                                    ? 'bg-purple-500 border-white shadow-[0_0_8px_#a855f7] scale-110'
+                                    : isCalibrated
+                                      ? 'bg-emerald-500 border-white shadow-[0_0_6px_#10b981]'
+                                      : 'bg-gray-850 border-gray-700 hover:bg-gray-800 hover:border-gray-600 text-gray-400 hover:text-white'
+                                  }`}
+                                style={{
+                                  left: `${xPct}%`,
+                                  top: `${yPct}%`,
+                                }}
+                                title={l.name}
+                              >
+                                {idx + 1}
+                                {isActive && (
+                                  <span className="absolute -inset-1 rounded-full border border-purple-400 animate-ping opacity-75" />
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Landmark Help Banner */}
+                      <div className="p-3 py-2.5 rounded-xl border border-purple-500/20 bg-purple-950/10 flex items-center justify-between">
+                        <div className="space-y-0.5">
+                          <div className="text-[8.5px] text-purple-400 font-bold uppercase tracking-wider font-mono">
+                            Target Landmark
+                          </div>
+                          <p className="text-xs text-gray-200 font-semibold leading-normal">
+                            Pin the <strong className="text-purple-300 underline font-extrabold">{activeLandmark.name.split(' (')[0]}</strong> on the video frame image.
+                          </p>
+                        </div>
+                        {calibrationPoints[selectedLandmarkId] && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCalibrationPoints(prev => {
+                                const updated = { ...prev };
+                                delete updated[selectedLandmarkId];
+                                return updated;
+                              });
+                            }}
+                            className="p-2 rounded-lg bg-red-955/20 hover:bg-red-955/40 border border-red-500/25 hover:border-red-500/50 text-red-400 hover:text-red-300 text-[10px] font-bold font-mono transition-all flex items-center gap-1 cursor-pointer active:scale-95 shrink-0"
+                            title="Remove pin for this landmark"
+                          >
+                            <X className="w-3 h-3" />
+                            Clear Pin
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Calibrated Points Checklist Details */}
+                      {calibratedCount > 0 && (
+                        <div className="space-y-1">
+                          <span className="text-[9px] text-gray-500 font-black tracking-widest uppercase block font-mono">
+                            2. Calibrated Details
+                          </span>
+                          <div className="max-h-[85px] overflow-y-auto rounded-xl border border-gray-850 p-2 space-y-1 text-[10px] font-mono">
+                            {landmarks.map((l, idx) => {
+                              const pt = calibrationPoints[l.id];
+                              if (!pt) return null;
+                              const isActive = selectedLandmarkId === l.id;
+                              return (
+                                <div 
+                                  key={l.id} 
+                                  onClick={() => setSelectedLandmarkId(l.id)}
+                                  className={`flex items-center justify-between p-1.5 rounded-xl cursor-pointer transition-all ${
+                                    isActive 
+                                      ? 'bg-purple-950/30 border border-purple-500/20 text-purple-300 font-bold' 
+                                      : 'hover:bg-gray-800/40 text-gray-400 border border-transparent'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    {/* Clear Badge Marker matching the pin numbers */}
+                                    <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[9.5px] font-black font-mono text-white ${
+                                      isActive
+                                        ? 'bg-purple-600 shadow-[0_0_6px_rgba(168,85,247,0.4)]'
+                                        : 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.3)]'
+                                    }`}>
+                                      {idx + 1}
+                                    </div>
+                                    <span className="truncate max-w-[120px] text-xs font-semibold">{l.name.split(' (')[0]}</span>
+                                  </div>
+                                  
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-emerald-400 font-bold text-[10.5px]">
+                                      [{(pt.screenX).toFixed(0)}%, {(pt.screenY).toFixed(0)}%]
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setCalibrationPoints(prev => {
+                                          const updated = { ...prev };
+                                          delete updated[l.id];
+                                          return updated;
+                                        });
+                                      }}
+                                      className="p-1 rounded hover:bg-gray-800 hover:text-red-400 text-gray-500 transition-colors cursor-pointer"
+                                      title="Remove this pin"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-3">
+                      {calibratedCount > 0 && (
+                        <button 
+                          onClick={() => setCalibrationPoints({})}
+                          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-xl bg-gray-850 text-gray-400 hover:text-white transition-all cursor-pointer border border-gray-800 text-[10px] font-bold font-mono active:scale-[0.98]"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          Clear Calibration
+                        </button>
+                      )}
+
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => {
+                            setIsCalibratingMode(false);
+                            setCalibrationPoints({});
+                            setZoom(1);
+                            setPanX(0);
+                            setPanY(0);
+                          }}
+                          className="px-4 py-3.5 rounded-xl border border-gray-800 text-gray-400 hover:text-gray-200 hover:bg-gray-900/60 font-black text-xs uppercase tracking-wider transition-all cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        
+                        <button
+                          disabled={calibratedCount < 4 || isCalibratingSaving}
+                          onClick={saveCalibration}
+                          className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 disabled:from-gray-800 disabled:to-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs uppercase tracking-wider transition-all shadow-lg active:scale-[0.98] cursor-pointer"
+                        >
+                          {isCalibratingSaving ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin text-white" />
+                              Calibrating...
+                            </>
+                          ) : (
+                            <>
+                              <Check className="w-4 h-4 text-emerald-300" />
+                              Apply Calibration
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  /* Standard Mode Active */
+                  <div className="space-y-6 flex flex-col justify-between flex-1">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded text-[9px] font-black tracking-widest text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 uppercase font-mono">
+                          Stream Extracted
+                        </span>
+                        {isCalibrated && (
+                          <span className="flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-black tracking-widest text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 uppercase font-mono shadow-[0_0_10px_rgba(16,185,129,0.15)] animate-pulse">
+                            <Check className="w-2.5 h-2.5" />
+                            Calibrated
+                          </span>
+                        )}
+                      </div>
+                      
+                      <h3 className="text-xl font-black text-gray-100 mt-3 break-all line-clamp-1" title={videoMetadata.filename}>
+                        {videoMetadata.filename}
+                      </h3>
+                      
+                      {/* Specs List Grid */}
+                      <div className="grid grid-cols-2 gap-3 mt-4 text-xs font-mono">
+                        <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
+                          <span className="text-[9px] text-gray-500 font-bold block uppercase tracking-wider">Resolution</span>
+                          <span className="text-gray-200 font-black">{videoMetadata.width} × {videoMetadata.height} px</span>
+                        </div>
+                        <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
+                          <span className="text-[9px] text-gray-500 font-bold block uppercase tracking-wider">Framerate</span>
+                          <span className="text-gray-200 font-black">{videoMetadata.fps} FPS</span>
+                        </div>
+                        <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
+                          <span className="text-[9px] text-gray-500 font-bold block uppercase tracking-wider">Duration</span>
+                          <span className="text-gray-200 font-black">
+                            {Math.floor(videoMetadata.duration / 60)}m {Math.floor(videoMetadata.duration % 60)}s
+                          </span>
+                        </div>
+                        <div className="p-3 bg-gray-950/20 rounded-xl border border-gray-850">
+                          <span className="text-[9px] text-gray-500 font-bold block uppercase tracking-wider">Frames</span>
+                          <span className="text-gray-200 font-black">{videoMetadata.totalFrames} f</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setVideoMetadata(null)}
+                          className="px-4 py-3 rounded-xl border border-gray-800 text-gray-400 hover:text-gray-200 hover:bg-gray-900/60 font-black text-xs uppercase tracking-wider transition-all cursor-pointer text-center"
+                        >
+                          Replace
+                        </button>
+                        
+                        <button
+                          onClick={() => setIsCalibratingMode(true)}
+                          className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-black text-xs uppercase tracking-wider transition-all border cursor-pointer ${
+                            isCalibrated
+                              ? 'bg-emerald-950/15 border-emerald-500/40 text-emerald-400 hover:bg-emerald-950/25 hover:border-emerald-500'
+                              : 'bg-gray-850 border-gray-800 text-gray-300 hover:bg-gray-800 hover:border-gray-700'
+                          }`}
+                        >
+                          <Settings className="w-4 h-4 text-purple-400" />
+                          {isCalibrated ? 'Recalibrate Field' : 'Calibrate Landmarks'}
+                        </button>
+                      </div>
+
+                      <button
+                        onClick={startAnalysis}
+                        className="w-full flex items-center justify-center gap-2 px-6 py-4 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-500 hover:from-purple-500 hover:to-indigo-500 hover:to-cyan-400 text-white font-black text-sm uppercase tracking-wider transition-all shadow-[0_4px_20px_rgba(168,85,247,0.3)] hover:shadow-[0_4px_25px_rgba(168,85,247,0.55)] active:scale-[0.98] cursor-pointer"
+                      >
+                        Run Tracking & Team Clustering
+                        <ArrowRight className="w-4 h-4 text-cyan-300" />
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

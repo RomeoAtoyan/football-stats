@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from tracking.pipeline import run_tracking_pipeline
+from tracking.homography import compute_homography
 
 app = FastAPI(title="PitchTrack AI Backend API")
 
@@ -187,6 +188,49 @@ def background_tracking_task(video_path: str, H: np.ndarray):
         processing_status["status"] = "failed"
         processing_status["message"] = "Tracking pipeline execution failed."
         processing_status["error"] = str(e)
+
+@app.post("/api/calibrate")
+def calibrate_camera(req: CalibrationRequest):
+    """
+    Computes a new homography matrix from 4+ point correspondences
+    and saves it to camera_calibration.json.
+    """
+    if len(req.points) < 4:
+        raise HTTPException(status_code=400, detail="At least 4 point correspondences are required for calibration.")
+        
+    pixel_pts = [tuple(pt.pixel) for pt in req.points]
+    real_pts = [tuple(pt.real) for pt in req.points]
+    
+    H = compute_homography(pixel_pts, real_pts)
+    if H is None:
+        raise HTTPException(status_code=400, detail="Homography calculation failed. Ensure points are not collinear and properly ordered.")
+        
+    h_list = H.tolist()
+    calibration_file = os.path.join(BASE_DIR, "camera_calibration.json")
+    try:
+        calib_data = {
+            "homography": h_list,
+            "points": [{"pixel": pt.pixel, "real": pt.real} for pt in req.points],
+            "calibration_frame_idx": 0
+        }
+        with open(calibration_file, "w") as f:
+            json.dump(calib_data, f, indent=2)
+        logger.info("Successfully updated camera_calibration.json with new homography.")
+        
+        # Clear previous tracking cache for new calibration
+        cache_file = os.path.join(EXPORT_DIR, "tracking_cache.pkl")
+        if os.path.exists(cache_file):
+            try:
+                os.remove(cache_file)
+                logger.info("Cleared previous tracking cache for new calibration.")
+            except Exception as e:
+                logger.warning(f"Failed to remove tracking cache: {e}")
+                
+    except Exception as e:
+        logger.error(f"Failed to save calibration file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save calibration: {e}")
+        
+    return {"status": "success", "message": "Camera calibrated successfully.", "homography": h_list}
 
 @app.post("/api/process")
 def start_processing(background_tasks: BackgroundTasks):
