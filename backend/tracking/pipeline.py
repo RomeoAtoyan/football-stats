@@ -127,7 +127,7 @@ def run_tracking_pipeline(
             classes=[0, 32],
             conf=0.10, # Lowered to 0.10 to allow ByteTrack's two-stage low-thresh association to resolve occlusions
             iou=0.60,
-            imgsz=1600, # Bumped resolution to 1600 to capture distant players with extreme clarity!
+            imgsz=(height, width), # Dynamic native video resolution for pixel-perfect tracking (ready for RTX 4070 / 4090)
             verbose=False
         )
         
