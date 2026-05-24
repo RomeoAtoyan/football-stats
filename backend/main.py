@@ -119,6 +119,15 @@ async def upload_video(file: UploadFile = File(...)):
         logger.error(f"Failed to extract video thumbnail: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to parse video specs: {e}")
         
+    # Clear previous tracking cache for the new video
+    cache_file = os.path.join(EXPORT_DIR, "tracking_cache.pkl")
+    if os.path.exists(cache_file):
+        try:
+            os.remove(cache_file)
+            logger.info("Cleared previous tracking cache for the new video upload.")
+        except Exception as e:
+            logger.warning(f"Failed to remove previous tracking cache: {e}")
+            
     global processing_status
     processing_status = {
         "status": "idle",

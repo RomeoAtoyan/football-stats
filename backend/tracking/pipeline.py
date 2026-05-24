@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 import json
+import pickle
 from typing import Callable, Tuple, Dict, Any
 from loguru import logger
 from ultralytics import YOLO
@@ -19,10 +20,10 @@ def run_tracking_pipeline(
     progress_callback: Callable[[float, str], None] = None
 ) -> Tuple[Dict[str, Any], str]:
     """
-    Core video processing pipeline:
-    1. Loads YOLOv8 model.
+    Core video processing pipeline with track caching:
+    1. Checks if a pre-compiled tracking cache file exists to skip YOLO inference.
     2. Runs player detections on initial frames to fit TeamAssigner color clustering.
-    3. Runs YOLOv8 + ByteTrack tracking on frames for players (class 0) and the ball (class 32).
+    3. Runs YOLOv8 + BoT-SORT tracking (if cache missed) or loads tracks from cache.
     4. Filters player foot coordinates with Kalman filters and projects to meters.
     5. Accumulates running speeds and total covered distance.
     6. Draws bounding boxes on the output frame (Purple for Team A, Aqua for Team B).
@@ -43,20 +44,36 @@ def run_tracking_pipeline(
     
     logger.info(f"Loaded input video: {width}x{height} @ {fps}fps, {total_frames} frames.")
     
-    # 1. Load YOLOv8 model
-    logger.info("Initializing YOLOv8 person tracking...")
-    if progress_callback:
-        progress_callback(0.02, "Loading computer vision tracking models...")
-        
-    model_name = "yolov8m.pt" # Upgraded from yolov8n.pt (Nano) to yolov8m.pt (Medium) for much higher detection accuracy
-    # Ensure model exists in backend
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_path = os.path.join(base_dir, model_name)
-    if not os.path.exists(model_path):
-        model_path = model_name # Let YOLO auto-download if not there
-        
-    model = YOLO(model_path)
+    # 0. Check for tracking cache
+    cache_path = os.path.join(os.path.dirname(export_json_path), "tracking_cache.pkl")
+    use_cache = os.path.exists(cache_path)
+    cached_tracks = {}
     
+    if use_cache:
+        try:
+            with open(cache_path, "rb") as f:
+                cached_tracks = pickle.load(f)
+            logger.info(f"Using cached tracking data with {len(cached_tracks)} frames from {cache_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load tracking cache: {e}. Running fresh tracking.")
+            use_cache = False
+            
+    model = None
+    if not use_cache:
+        # 1. Load YOLOv8 model
+        logger.info("Initializing YOLOv8 person tracking...")
+        if progress_callback:
+            progress_callback(0.02, "Loading computer vision tracking models...")
+            
+        model_name = "yolov8m.pt" # Upgraded from yolov8n.pt (Nano) to yolov8m.pt (Medium) for much higher detection accuracy
+        # Ensure model exists in backend
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        model_path = os.path.join(base_dir, model_name)
+        if not os.path.exists(model_path):
+            model_path = model_name # Let YOLO auto-download if not there
+            
+        model = YOLO(model_path)
+        
     # 2. Team Color Classifier learning pass (KMeans)
     logger.info("Running initial calibration pass for team division...")
     if progress_callback:
@@ -64,38 +81,65 @@ def run_tracking_pipeline(
         
     team_assigner = TeamAssigner()
     
-    # Read the first ~30 frames and find the frame with the most player detections to fit KMeans
-    init_frame_idx = 0
-    max_players_frame = None
-    max_players_detections = {}
-    max_players_count = 0
-    
-    while init_frame_idx < min(30, total_frames):
-        success, frame = cap.read()
-        if not success:
-            break
-            
-        results = model.predict(source=frame, classes=[0], conf=0.40, verbose=False)
-        if len(results) > 0 and results[0].boxes is not None:
-            boxes = results[0].boxes
-            current_players = {}
-            for i in range(len(boxes)):
-                xyxy = boxes[i].xyxy[0].cpu().numpy().tolist()
-                current_players[i] = {"bbox": xyxy}
-                
-            if len(current_players) > max_players_count:
-                max_players_count = len(current_players)
-                max_players_detections = current_players
-                max_players_frame = frame.copy()
-                
-        init_frame_idx += 1
+    if use_cache:
+        # Fine-tune team classifier using pre-extracted cached bounding boxes to save time
+        max_players_frame_idx = 0
+        max_players_count = 0
+        max_players_detections = {}
         
-    if max_players_frame is not None and max_players_count > 0:
-        logger.info(f"Fitting TeamAssigner with {max_players_count} players on initial frames.")
-        team_assigner.assign_team_colors(max_players_frame, max_players_detections)
+        for init_frame_idx in range(min(30, total_frames)):
+            if init_frame_idx in cached_tracks:
+                current_players = {}
+                idx = 0
+                for det in cached_tracks[init_frame_idx]:
+                    if det["cls"] == 0:
+                        current_players[idx] = {"bbox": det["bbox"]}
+                        idx += 1
+                if len(current_players) > max_players_count:
+                    max_players_count = len(current_players)
+                    max_players_detections = current_players
+                    max_players_frame_idx = init_frame_idx
+                    
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max_players_frame_idx)
+        success, max_players_frame = cap.read()
+        if success and max_players_count > 0:
+            logger.info(f"Fitting TeamAssigner using cache with {max_players_count} players on frame {max_players_frame_idx}.")
+            team_assigner.assign_team_colors(max_players_frame, max_players_detections)
+        else:
+            logger.warning("Failed to load calibration frame from video. Team classifier will fallback.")
     else:
-        logger.warning("No players detected in calibration pass. Team classifier will fallback.")
+        # Read the first ~30 frames and find the frame with the most player detections to fit KMeans
+        init_frame_idx = 0
+        max_players_frame = None
+        max_players_detections = {}
+        max_players_count = 0
         
+        while init_frame_idx < min(30, total_frames):
+            success, frame = cap.read()
+            if not success:
+                break
+                
+            results = model.predict(source=frame, classes=[0], conf=0.40, verbose=False)
+            if len(results) > 0 and results[0].boxes is not None:
+                boxes = results[0].boxes
+                current_players = {}
+                for i in range(len(boxes)):
+                    xyxy = boxes[i].xyxy[0].cpu().numpy().tolist()
+                    current_players[i] = {"bbox": xyxy}
+                    
+                if len(current_players) > max_players_count:
+                    max_players_count = len(current_players)
+                    max_players_detections = current_players
+                    max_players_frame = frame.copy()
+                    
+            init_frame_idx += 1
+            
+        if max_players_frame is not None and max_players_count > 0:
+            logger.info(f"Fitting TeamAssigner with {max_players_count} players on initial frames.")
+            team_assigner.assign_team_colors(max_players_frame, max_players_detections)
+        else:
+            logger.warning("No players detected in calibration pass. Team classifier will fallback.")
+            
     # Reset video capture for tracking pass
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     
@@ -110,6 +154,7 @@ def run_tracking_pipeline(
     frame_overlays: Dict[int, List[Dict[str, Any]]] = {}
     
     frame_idx = 0
+    new_tracks_to_cache = {}
     
     while True:
         success, frame = cap.read()
@@ -118,114 +163,128 @@ def run_tracking_pipeline(
             
         annotated_frame = frame.copy()
         
-        # Track objects: class 0 (person), class 32 (sports ball)
-        tracker_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_bytetrack.yaml")
-        results = model.track(
-            source=frame,
-            persist=True,
-            tracker=tracker_config_path, # Path to custom ByteTrack settings (8s buffer, new track thresh)
-            classes=[0, 32],
-            conf=0.10, # Lowered to 0.10 to allow ByteTrack's two-stage low-thresh association to resolve occlusions
-            iou=0.60,
-            imgsz=1600, # Reverted back to 1600 (rectangular 16:9 stretching in native 1920x1080 caused YOLO feature distortion)
-            verbose=False
-        )
+        detections = []
         
+        if use_cache:
+            detections = cached_tracks.get(frame_idx, [])
+        else:
+            # Track objects: class 0 (person), class 32 (sports ball)
+            tracker_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "custom_botsort.yaml")
+            results = model.track(
+                source=frame,
+                persist=True,
+                tracker=tracker_config_path, # Path to custom BoT-SORT settings (camera motion compensated)
+                classes=[0, 32],
+                conf=0.10, # Lowered to 0.10 to allow BoT-SORT's two-stage low-thresh association to resolve occlusions
+                iou=0.60,
+                imgsz=1280, # Temporarily lowered from 1600 for faster processing; bump back up for beast GPU runs
+                verbose=False
+            )
+            
+            if len(results) > 0 and results[0].boxes is not None:
+                boxes = results[0].boxes
+                for i in range(len(boxes)):
+                    xyxy = boxes[i].xyxy[0].cpu().numpy().tolist()
+                    cls_id = int(boxes[i].cls[0].cpu().numpy())
+                    track_id = int(boxes[i].id[0].cpu().numpy()) if boxes[i].id is not None else None
+                    detections.append({
+                        "bbox": xyxy,
+                        "cls": cls_id,
+                        "id": track_id
+                    })
+            new_tracks_to_cache[frame_idx] = detections
+            
         frame_detections = []
         ball_detections = []
         
-        if len(results) > 0 and results[0].boxes is not None:
-            boxes = results[0].boxes
-            for i in range(len(boxes)):
-                xyxy = boxes[i].xyxy[0].cpu().numpy().tolist()
-                x1, y1, x2, y2 = xyxy
-                cls_id = int(boxes[i].cls[0].cpu().numpy())
+        for det in detections:
+            x1, y1, x2, y2 = det["bbox"]
+            cls_id = det["cls"]
+            track_id = det["id"]
+            
+            # Check for class 0 (person) and verify tracking ID is set
+            if cls_id == 0 and track_id is not None:
+                # Filter out only massive full-screen bounding box anomalies
+                box_w = x2 - x1
+                box_h = y2 - y1
+                if box_w > width * 0.50 or box_h > height * 0.85:
+                    continue
+                    
+                # 4a. Trajectory Math: Player foot position mapping
+                foot_x = (x1 + x2) / 2.0
+                foot_y = y2
                 
-                # Check for class 0 (person) and verify tracking ID is set
-                if cls_id == 0 and boxes[i].id is not None:
-                    # Filter out only massive full-screen bounding box anomalies
-                    box_w = x2 - x1
-                    box_h = y2 - y1
-                    if box_w > width * 0.50 or box_h > height * 0.85:
-                        continue
-                        
-                    track_id = int(boxes[i].id[0].cpu().numpy())
-                    
-                    # 4a. Trajectory Math: Player foot position mapping
-                    foot_x = (x1 + x2) / 2.0
-                    foot_y = y2
-                    
-                    rx, ry = pixel_to_meter(foot_x, foot_y, homography_matrix)
-                    
-                    # Filter out players on the neighboring field in the background (far behind top touchline ry = 0)
-                    # We only check ry >= -4.5 to avoid dropping our own players/goalkeeper due to side homography coordinate distortions.
-                    if ry < -4.5:
-                        continue
-                    
-                    # Smooth trajectory with Kalman filter
-                    if track_id not in kalman_filters:
-                        kalman_filters[track_id] = KalmanFilter2D(rx, ry, dt=dt)
-                        stat_trackers[track_id] = PlayerStatsTracker(track_id, dt=dt)
-                        
-                    kf = kalman_filters[track_id]
-                    kf.predict()
-                    rx_smooth, ry_smooth = kf.update(rx, ry)
-                    
-                    # Accumulate distance and velocity metrics
-                    tracker = stat_trackers[track_id]
-                    tracker.add_position(frame_idx, rx_smooth, ry_smooth)
-                    
-                    # 4b. Team Classification
-                    team_id = team_assigner.get_player_team(frame, [x1, y1, x2, y2], track_id)
-                    team_color = team_assigner.team_colors[team_id]
-                    
-                    # 4c. Visual drawing annotations (glowing Purple and Aqua boxes)
-                    # Bounding Box
-                    cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), team_color, 2, lineType=cv2.LINE_AA)
-                    
-                    # Player ID Header: Draw filled rectangle tag
-                    tag_text = f"P{track_id}"
-                    (tw, th), baseline = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    cv2.rectangle(
-                        annotated_frame, 
-                        (int(x1), int(y1) - th - 6), 
-                        (int(x1) + tw + 10, int(y1)), 
-                        team_color, 
-                        -1
-                    )
-                    # Text inside tag
-                    cv2.putText(
-                        annotated_frame, 
-                        tag_text, 
-                        (int(x1) + 5, int(y1) - 4), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 
-                        0.5, 
-                        (255, 255, 255), 
-                        1, 
-                        cv2.LINE_AA
-                    )
-                    
-                    frame_detections.append({
-                        "id": track_id,
-                        "team": "A" if team_id == 1 else "B",
-                        "bbox": [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)],
-                        "real": [round(rx_smooth, 2), round(ry_smooth, 2)],
-                        "speed": round(tracker.path[-1]["speed"], 1)
-                    })
-                    
-                # Check for class 32 (sports ball)
-                elif cls_id == 32:
-                    ball_detections.append(xyxy)
-                    
-            # 4d. Highlight the ball on frame (Green glowing circle)
-            for ball_box in ball_detections:
-                bx1, by1, bx2, by2 = ball_box
-                bcx = int((bx1 + bx2) / 2)
-                bcy = int((by1 + by2) / 2)
-                # Draw small circle around the ball
-                cv2.circle(annotated_frame, (bcx, bcy), 8, (0, 255, 0), 2, lineType=cv2.LINE_AA)
-                cv2.circle(annotated_frame, (bcx, bcy), 2, (0, 255, 0), -1, lineType=cv2.LINE_AA)
+                rx, ry = pixel_to_meter(foot_x, foot_y, homography_matrix)
                 
+                # Filter out players on the neighboring field in the background (far behind top touchline y2 < 280 px)
+                # We use a pixel-based threshold rather than ry to avoid dropping active players or the goalkeeper due to homography warping on the far edges.
+                if y2 < 280:
+                    continue
+                
+                # Smooth trajectory with Kalman filter
+                if track_id not in kalman_filters:
+                    kalman_filters[track_id] = KalmanFilter2D(rx, ry, dt=dt)
+                    stat_trackers[track_id] = PlayerStatsTracker(track_id, dt=dt)
+                    
+                kf = kalman_filters[track_id]
+                kf.predict()
+                rx_smooth, ry_smooth = kf.update(rx, ry)
+                
+                # Accumulate distance and velocity metrics
+                tracker = stat_trackers[track_id]
+                tracker.add_position(frame_idx, rx_smooth, ry_smooth)
+                
+                # 4b. Team Classification
+                team_id = team_assigner.get_player_team(frame, [x1, y1, x2, y2], track_id)
+                team_color = team_assigner.team_colors[team_id]
+                
+                # 4c. Visual drawing annotations (glowing Purple and Aqua boxes)
+                # Bounding Box
+                cv2.rectangle(annotated_frame, (int(x1), int(y1)), (int(x2), int(y2)), team_color, 2, lineType=cv2.LINE_AA)
+                
+                # Player ID Header: Draw filled rectangle tag
+                tag_text = f"P{track_id}"
+                (tw, th), baseline = cv2.getTextSize(tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(
+                    annotated_frame, 
+                    (int(x1), int(y1) - th - 6), 
+                    (int(x1) + tw + 10, int(y1)), 
+                    team_color, 
+                    -1
+                )
+                # Text inside tag
+                cv2.putText(
+                    annotated_frame, 
+                    tag_text, 
+                    (int(x1) + 5, int(y1) - 4), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 
+                    0.5, 
+                    (255, 255, 255), 
+                    1, 
+                    cv2.LINE_AA
+                )
+                
+                frame_detections.append({
+                    "id": track_id,
+                    "team": "A" if team_id == 1 else "B",
+                    "bbox": [round(x1, 1), round(y1, 1), round(x2 - x1, 1), round(y2 - y1, 1)],
+                    "real": [round(rx_smooth, 2), round(ry_smooth, 2)],
+                    "speed": round(tracker.path[-1]["speed"], 1)
+                })
+                
+            # Check for class 32 (sports ball)
+            elif cls_id == 32:
+                ball_detections.append(det["bbox"])
+                
+        # 4d. Highlight the ball on frame (Green glowing circle)
+        for ball_box in ball_detections:
+            bx1, by1, bx2, by2 = ball_box
+            bcx = int((bx1 + bx2) / 2)
+            bcy = int((by1 + by2) / 2)
+            # Draw small circle around the ball
+            cv2.circle(annotated_frame, (bcx, bcy), 8, (0, 255, 0), 2, lineType=cv2.LINE_AA)
+            cv2.circle(annotated_frame, (bcx, bcy), 2, (0, 255, 0), -1, lineType=cv2.LINE_AA)
+            
         # Save details for frame overlay
         frame_overlays[frame_idx] = frame_detections
         writer.write(annotated_frame)
@@ -238,6 +297,15 @@ def run_tracking_pipeline(
             
     cap.release()
     writer.release()
+    
+    # Save cache if we did a fresh run
+    if not use_cache and len(new_tracks_to_cache) > 0:
+        try:
+            with open(cache_path, "wb") as f:
+                pickle.dump(new_tracks_to_cache, f)
+            logger.info(f"Saved tracking cache with {len(new_tracks_to_cache)} frames to {cache_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save tracking cache: {e}")
     
     # 5. Finalize Statistics and Export JSON
     logger.info("Finalizing player metrics summaries...")

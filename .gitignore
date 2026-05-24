@@ -17,14 +17,23 @@ backend/*.pt
 *.pt
 
 # Uploaded raw videos / dynamic data
-backend/uploads/
+backend/uploads/*
 !backend/uploads/dummy.jpg
 
-# Generated/temporary static frames/overlays
-backend/static/
-!backend/static/players/
+# Video files (global)
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
 
-# Generated exports
+# Generated/temporary static frames/overlays/videos
+backend/static/first_frame.jpg
+backend/static/grid_overlay.jpg
+backend/static/output_video.mp4
+backend/static/output_video.avi
+
+# Generated exports and caches
 backend/exports/
 
 # Node modules / frontend build

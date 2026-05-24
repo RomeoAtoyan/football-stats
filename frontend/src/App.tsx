@@ -1,3 +1,4 @@
+import React, { useEffect } from 'react';
 import { usePitchTrackStore } from './store/pitchtrackStore';
 import { UploadView } from './components/UploadView';
 import { ProcessingView } from './components/ProcessingView';
@@ -5,7 +6,37 @@ import { DashboardView } from './components/DashboardView';
 import { Shield, Sparkles, RefreshCw } from 'lucide-react';
 
 function App() {
-  const { currentView, resetAll, results } = usePitchTrackStore();
+  const { currentView, resetAll, results, setView, setResults, setProcessingStatus } = usePitchTrackStore();
+
+  useEffect(() => {
+    // Check if there is an active session or completed results on the backend
+    const restoreSession = async () => {
+      try {
+        const response = await fetch('http://localhost:8000/api/status');
+        if (!response.ok) return;
+        const data = await response.json();
+        
+        if (data.resultsReady) {
+          // Fetch results and load dashboard directly
+          const resResponse = await fetch('http://localhost:8000/api/results');
+          if (resResponse.ok) {
+            const resData = await resResponse.json();
+            setResults(resData);
+            setProcessingStatus('completed');
+            setView('dashboard');
+          }
+        } else if (data.status === 'processing') {
+          // Resume processing screen
+          setProcessingStatus('processing');
+          setView('processing');
+        }
+      } catch (err) {
+        console.error('Failed to restore session:', err);
+      }
+    };
+
+    restoreSession();
+  }, [setView, setResults, setProcessingStatus]);
 
   return (
     <div className="min-h-screen bg-[#0b0f19] flex flex-col font-sans text-gray-100">
