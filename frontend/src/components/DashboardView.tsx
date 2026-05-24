@@ -73,8 +73,9 @@ export const DashboardView: React.FC = () => {
   const [showTeamA, setShowTeamA] = useState(true);
   const [showTeamB, setShowTeamB] = useState(true);
 
-  // Perspective Grid Overlay state
+  // Overlays states
   const [showGridOverlay, setShowGridOverlay] = useState(false);
+  const [showPlayerBoxes, setShowPlayerBoxes] = useState(true);
   const [currentHomography, setCurrentHomography] = useState<number[][] | null>(null);
 
   // Fetch active homography on mount
@@ -277,64 +278,66 @@ export const DashboardView: React.FC = () => {
             />
             
             {/* Interactive Player Bounding Boxes Overlay */}
-            <div className="absolute inset-0 pointer-events-none overflow-hidden">
-              {(results.frames[String(currentFrame)] || results.frames[currentFrame] || []).map((det) => {
-                const isTeamA = det.team === 'A';
-                if (isTeamA && !showTeamA) return null;
-                if (!isTeamA && !showTeamB) return null;
-                
-                const [bx, by, bw, bh] = det.bbox;
-                const left = (bx / results.metadata.width) * 100;
-                const top = (by / results.metadata.height) * 100;
-                const width = (bw / results.metadata.width) * 100;
-                const height = (bh / results.metadata.height) * 100;
-                const color = isTeamA ? '#a855f7' : '#06b6d4';
-                const isSelected = det.id === selectedPlayerId;
-                
-                return (
-                  <div
-                    key={det.id}
-                    style={{
-                      position: 'absolute',
-                      left: `${left}%`,
-                      top: `${top}%`,
-                      width: `${width}%`,
-                      height: `${height}%`,
-                      border: `2px solid ${color}`,
-                      boxShadow: isSelected ? `0 0 15px ${color}` : `0 0 8px ${color}80`,
-                      borderRadius: '6px',
-                      transition: 'all 0.15s ease-out'
-                    }}
-                  >
-                    {/* Interactive Player Tag Clickable */}
-                    <button
-                      onClick={() => setSelectedPlayerId(isSelected ? null : det.id)}
+            {showPlayerBoxes && (
+              <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                {(results.frames[String(currentFrame)] || results.frames[currentFrame] || []).map((det) => {
+                  const isTeamA = det.team === 'A';
+                  if (isTeamA && !showTeamA) return null;
+                  if (!isTeamA && !showTeamB) return null;
+                  
+                  const [bx, by, bw, bh] = det.bbox;
+                  const left = (bx / results.metadata.width) * 100;
+                  const top = (by / results.metadata.height) * 100;
+                  const width = (bw / results.metadata.width) * 100;
+                  const height = (bh / results.metadata.height) * 100;
+                  const color = isTeamA ? '#a855f7' : '#06b6d4';
+                  const isSelected = det.id === selectedPlayerId;
+                  
+                  return (
+                    <div
+                      key={det.id}
                       style={{
                         position: 'absolute',
-                        top: '-20px',
-                        left: '-2px',
-                        backgroundColor: color,
-                        color: isTeamA ? '#ffffff' : '#000000',
-                        fontSize: '9px',
-                        fontWeight: 'black',
-                        padding: '1px 5px',
-                        borderRadius: '4px',
-                        whiteSpace: 'nowrap',
-                        pointerEvents: 'auto',
-                        cursor: 'pointer',
-                        border: 'none',
-                        boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
-                        textTransform: 'uppercase'
+                        left: `${left}%`,
+                        top: `${top}%`,
+                        width: `${width}%`,
+                        height: `${height}%`,
+                        border: `2px solid ${color}`,
+                        boxShadow: isSelected ? `0 0 15px ${color}` : `0 0 8px ${color}80`,
+                        borderRadius: '6px',
+                        transition: 'all 0.15s ease-out'
                       }}
                     >
-                      P{det.id}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+                      {/* Interactive Player Tag Clickable */}
+                      <button
+                        onClick={() => setSelectedPlayerId(isSelected ? null : det.id)}
+                        style={{
+                          position: 'absolute',
+                          top: '-20px',
+                          left: '-2px',
+                          backgroundColor: color,
+                          color: isTeamA ? '#ffffff' : '#000000',
+                          fontSize: '9px',
+                          fontWeight: 'black',
+                          padding: '1px 5px',
+                          borderRadius: '4px',
+                          whiteSpace: 'nowrap',
+                          pointerEvents: 'auto',
+                          cursor: 'pointer',
+                          border: 'none',
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+                          textTransform: 'uppercase'
+                        }}
+                      >
+                        P{det.id}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
-            {/* Projected Warped Calibration Grid Overlay (Draws inside video container) */}
+            {/* Projected Warped Calibration Grid Overlay (Draws inside video container, in RED) */}
             {showGridOverlay && H_inv && (
               <svg 
                 className="absolute inset-0 w-full h-full pointer-events-none z-10"
@@ -359,7 +362,7 @@ export const DashboardView: React.FC = () => {
                       y1={`${y1}%`}
                       x2={`${x2}%`}
                       y2={`${y2}%`}
-                      stroke="#10b981"
+                      stroke="#ef4444"
                       strokeWidth="0.45"
                       strokeDasharray="1.2,1.2"
                       className="opacity-90"
@@ -390,7 +393,7 @@ export const DashboardView: React.FC = () => {
                     <polygon
                       points={pointsStr}
                       fill="none"
-                      stroke="#10b981"
+                      stroke="#ef4444"
                       strokeWidth="0.45"
                       strokeDasharray="1.2,1.2"
                       className="opacity-90"
@@ -408,21 +411,38 @@ export const DashboardView: React.FC = () => {
               </span>
             </div>
 
-            {/* Grid Overlay Toggle Button (Top-Right Floating Corner) */}
-            {currentHomography && (
+            {/* Float Overlay Actions Toolbar (Top-Right Floating Corner) */}
+            <div className="absolute top-4 right-4 flex items-center gap-2 pointer-events-auto">
+              {/* Player Boxes Toggle Button */}
               <button
-                onClick={() => setShowGridOverlay(!showGridOverlay)}
-                className={`absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-[10.5px] cursor-pointer transition-all shadow-lg pointer-events-auto select-none ${
-                  showGridOverlay
-                    ? 'bg-emerald-600 hover:bg-emerald-500 border-emerald-400 text-white shadow-[0_0_12px_rgba(16,185,129,0.35)]'
+                onClick={() => setShowPlayerBoxes(!showPlayerBoxes)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-[10.5px] cursor-pointer transition-all shadow-lg select-none ${
+                  showPlayerBoxes
+                    ? 'bg-purple-600 hover:bg-purple-500 border-purple-400 text-white shadow-[0_0_12px_rgba(168,85,247,0.35)]'
                     : 'bg-black/65 hover:bg-black/85 border-white/5 text-gray-300 hover:text-white'
                 }`}
-                title="Toggle Warped Perspective Field Grid Overlay"
+                title="Toggle Player Bounding Box Overlays"
               >
-                <Grid className="w-3.5 h-3.5" />
-                Grid Overlay: {showGridOverlay ? 'ON' : 'OFF'}
+                {showPlayerBoxes ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                Boxes: {showPlayerBoxes ? 'SHOW' : 'HIDE'}
               </button>
-            )}
+
+              {/* Grid Overlay Toggle Button (RED active grid overlay) */}
+              {currentHomography && (
+                <button
+                  onClick={() => setShowGridOverlay(!showGridOverlay)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-[10.5px] cursor-pointer transition-all shadow-lg select-none ${
+                    showGridOverlay
+                      ? 'bg-red-650 hover:bg-red-550 border-red-500 text-white shadow-[0_0_12px_rgba(239,68,68,0.35)]'
+                      : 'bg-black/65 hover:bg-black/85 border-white/5 text-gray-300 hover:text-white'
+                  }`}
+                  title="Toggle Warped Perspective Field Grid Overlay"
+                >
+                  <Grid className="w-3.5 h-3.5" />
+                  Grid: {showGridOverlay ? 'SHOW' : 'HIDE'}
+                </button>
+              )}
+            </div>
 
             {/* Download Output video button */}
             <a

@@ -658,7 +658,7 @@ export const UploadView: React.FC = () => {
                     );
                   })}
 
-                  {/* Projected Warped Calibration Grid Overlay (Draws inside zoomed space) */}
+                  {/* Projected Warped Calibration Grid Overlay (Draws inside zoomed space, in RED) */}
                   {isCalibratingMode && showGridOverlay && H_inv && (
                     <svg 
                       className="absolute inset-0 w-full h-full pointer-events-none z-10"
@@ -683,7 +683,7 @@ export const UploadView: React.FC = () => {
                             y1={`${y1}%`}
                             x2={`${x2}%`}
                             y2={`${y2}%`}
-                            stroke="#10b981"
+                            stroke="#ef4444"
                             strokeWidth="0.4"
                             strokeDasharray="1.2,1.2"
                             className="opacity-90"
@@ -714,7 +714,7 @@ export const UploadView: React.FC = () => {
                           <polygon
                             points={pointsStr}
                             fill="none"
-                            stroke="#10b981"
+                            stroke="#ef4444"
                             strokeWidth="0.4"
                             strokeDasharray="1.2,1.2"
                             className="opacity-90"
@@ -762,7 +762,7 @@ export const UploadView: React.FC = () => {
                       </button>
                     </div>
 
-                    {/* Live Calibration Grid Overlay Toggle (Enabled when 4+ points placed) */}
+                    {/* Live Calibration Grid Overlay Toggle (Crimson Red Theme when active) */}
                     <div className="flex gap-1 border-r border-gray-800 pr-1.5">
                       <button
                         onClick={async () => {
@@ -780,7 +780,7 @@ export const UploadView: React.FC = () => {
                         disabled={calibratedCount < 4}
                         className={`p-2 rounded-lg transition-all border cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
                           showGridOverlay
-                            ? 'bg-emerald-950/45 border-emerald-500/40 text-emerald-450 shadow-[0_0_10px_rgba(16,185,129,0.25)]'
+                            ? 'bg-red-955/45 border-red-500/40 text-red-400 shadow-[0_0_10px_rgba(239,68,68,0.25)]'
                             : 'bg-transparent border-transparent text-gray-400 hover:text-white hover:bg-gray-800'
                         }`}
                         title="Toggle Warped Football Field Overlay (Requires 4+ points)"
@@ -875,7 +875,7 @@ export const UploadView: React.FC = () => {
                                     ? 'bg-purple-500 border-white shadow-[0_0_8px_#a855f7] scale-110'
                                     : isCalibrated
                                       ? 'bg-emerald-500 border-white shadow-[0_0_6px_#10b981]'
-                                      : 'bg-gray-850 border-gray-700 hover:bg-gray-800 hover:border-gray-600 text-gray-400 hover:text-white'
+                                      : 'bg-gray-855 border-gray-700 hover:bg-gray-800 hover:border-gray-600 text-gray-400 hover:text-white'
                                   }`}
                                 style={{
                                   left: `${xPct}%`,
@@ -935,7 +935,7 @@ export const UploadView: React.FC = () => {
                           <span className="text-[9px] text-gray-500 font-black tracking-widest uppercase block font-mono">
                             2. Calibrated Details
                           </span>
-                          <div className="max-h-[85px] overflow-y-auto rounded-xl border border-gray-850 p-2 space-y-1 text-[10px] font-mono">
+                          <div className="max-h-[85px] overflow-y-auto rounded-xl border border-gray-855 p-2 space-y-1 text-[10px] font-mono">
                             {landmarks.map((l, idx) => {
                               const pt = calibrationPoints[l.id];
                               if (!pt) return null;
