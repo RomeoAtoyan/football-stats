@@ -78,6 +78,10 @@ export const DashboardView: React.FC = () => {
   const [showPlayerBoxes, setShowPlayerBoxes] = useState(true);
   const [currentHomography, setCurrentHomography] = useState<number[][] | null>(null);
 
+  // High-Performance 60fps requestAnimationFrame player sync refs
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const animationFrameId = useRef<number | null>(null);
+
   // Fetch active homography on mount
   useEffect(() => {
     const fetchCalibration = async () => {
@@ -95,10 +99,37 @@ export const DashboardView: React.FC = () => {
     };
     fetchCalibration();
   }, []);
+
+  const startPlaybackLoop = () => {
+    const loop = () => {
+      if (!videoRef.current) return;
+      const video = videoRef.current;
+      const frame = Math.round(video.currentTime * results.metadata.fps);
+      setCurrentFrame(frame);
+
+      if (!video.paused && !video.ended) {
+        animationFrameId.current = requestAnimationFrame(loop);
+      }
+    };
+    animationFrameId.current = requestAnimationFrame(loop);
+  };
+
+  const stopPlaybackLoop = () => {
+    if (animationFrameId.current !== null) {
+      cancelAnimationFrame(animationFrameId.current);
+      animationFrameId.current = null;
+    }
+  };
+
+  // Cleanup loop on unmount
+  useEffect(() => {
+    return () => stopPlaybackLoop();
+  }, []);
   
   if (!results) return null;
 
   const handleTimeUpdate = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    // Backup sync for seek actions
     const video = e.currentTarget;
     const frame = Math.round(video.currentTime * results.metadata.fps);
     setCurrentFrame(frame);
@@ -269,10 +300,13 @@ export const DashboardView: React.FC = () => {
         <div className="flex-1 flex flex-col justify-center items-center p-6 bg-gray-950/20 overflow-y-auto">
           <div className="relative w-full max-w-4xl rounded-3xl overflow-hidden border border-gray-805 shadow-2xl bg-black">
             <video 
+              ref={videoRef}
               src="http://localhost:8000/uploads/uploaded_match.mp4" 
               controls 
               autoPlay 
               loop
+              onPlay={startPlaybackLoop}
+              onPause={stopPlaybackLoop}
               onTimeUpdate={handleTimeUpdate}
               className="w-full h-auto block object-fill"
             />
@@ -305,7 +339,8 @@ export const DashboardView: React.FC = () => {
                         border: `2px solid ${color}`,
                         boxShadow: isSelected ? `0 0 15px ${color}` : `0 0 8px ${color}80`,
                         borderRadius: '6px',
-                        transition: 'all 0.15s ease-out'
+                        // Set to none to eliminate coordinates interpolation lag
+                        transition: 'none'
                       }}
                     >
                       {/* Interactive Player Tag Clickable */}
