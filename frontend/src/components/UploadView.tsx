@@ -837,6 +837,24 @@ export const UploadView: React.FC = () => {
                   </div>
                 )}
 
+                {/* Live Calibration Grid Overlay Toggle for Standard Video Preview Mode */}
+                {!isCalibratingMode && isCalibrated && currentHomography && (
+                  <div className="absolute top-4 right-4 flex items-center gap-2 z-10 pointer-events-auto">
+                    <button
+                      onClick={() => setShowGridOverlay(!showGridOverlay)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border font-bold text-[10.5px] cursor-pointer transition-all shadow-lg select-none ${
+                        showGridOverlay
+                          ? 'bg-red-600 hover:bg-red-500 border-red-400 text-white shadow-[0_0_12px_rgba(239,68,68,0.35)]'
+                          : 'bg-black/65 hover:bg-black/85 border-white/5 text-gray-305 hover:text-white'
+                      }`}
+                      title="Toggle Warped Perspective Field Grid Overlay"
+                    >
+                      <Grid className="w-3.5 h-3.5" />
+                      Grid: {showGridOverlay ? 'SHOW' : 'HIDE'}
+                    </button>
+                  </div>
+                )}
+
                 {/* Interactive Zoom & Tool Selection Toolbar */}
                 {isCalibratingMode && (
                   <div className="absolute bottom-4 left-4 flex items-center gap-2 p-1.5 rounded-xl bg-black/85 border border-white/5 backdrop-blur-md shadow-2xl">
