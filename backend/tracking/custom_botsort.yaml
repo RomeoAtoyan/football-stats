@@ -7,11 +7,11 @@
 #   - Strong appearance gating for ReID swaps (low cosine distance required to merge)
 
 tracker_type: botsort
-track_high_thresh: 0.45   # First-stage association threshold. Raised from 0.30 -> 0.45 for cleaner anchor matches.
-track_low_thresh: 0.10    # Second-stage threshold to recover occluded players via BoT-SORT two-stage association.
-new_track_thresh: 0.65    # Minimum confidence to spawn a NEW track ID. Raised from 0.40 -> 0.65 to crush ID inflation.
-track_buffer: 300         # Frames to keep lost tracks alive. 300 @ 30fps = 10s — survives long occlusions / out-of-frame.
-match_thresh: 0.80        # Cost (1-IoU + appearance) threshold for matching. 0.80 is the BoT-SORT paper default.
+track_high_thresh: 0.35   # Strong enough for clean matches, low enough to keep distant players active.
+track_low_thresh: 0.08    # Recover weak/occluded player detections instead of dropping the track.
+new_track_thresh: 0.55    # Avoid ghost IDs, but do not block real players from entering the game.
+track_buffer: 600         # ~20s @ 30fps. Keep identities alive through camera pans / occlusions.
+match_thresh: 0.90        # More lenient association before spawning a new identity.
 fuse_score: True          # Fuse detection score with IoU during matching (required by modern Ultralytics).
 
 # BoT-SORT camera motion compensation
@@ -23,5 +23,5 @@ gmc_method: sparseOptFlow # Global Motion Compensation via sparse optical flow �
 # and reassign their ORIGINAL ID instead of spawning a brand new one.
 with_reid: True           # PREVIOUSLY FALSE — this was the #1 cause of ID inflation (5 players -> 36 IDs).
 model: auto               # "auto" uses YOLOv8m's native backbone features (minimal overhead, no extra inference).
-proximity_thresh: 0.50    # Minimum IoU for ReID to even consider a match (prevents ReID swapping players across the field).
-appearance_thresh: 0.25   # Cosine similarity threshold for ReID. BoT-SORT paper default for MOT17 = 0.25 (lower = more lenient reconnection).
+proximity_thresh: 0.35    # Let ReID help even when bbox overlap is weak after camera motion.
+appearance_thresh: 0.20   # More forgiving appearance match before creating a fresh ID.

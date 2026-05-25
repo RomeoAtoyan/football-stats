@@ -17,7 +17,47 @@ from tracking.track_merger import stitch_fragments
 # Bump this whenever the detector/tracker config materially changes, so stale
 # pickle caches written by an older version are auto-invalidated instead of
 # silently producing inconsistent IDs.
-TRACKING_CACHE_VERSION = 3
+TRACKING_CACHE_VERSION = 6
+
+
+TRACKER_IMGSZ = 1280
+
+
+def _extract_player_appearance(frame: np.ndarray, bbox: List[float]) -> np.ndarray | None:
+    """
+    Compact color signature for offline tracklet stitching.
+
+    This is deliberately cheap: no extra model, just HSV histograms over the player crop.
+    It gives the stitcher another signal when BoT-SORT assigns a new raw ID to the same
+    person after a short occlusion or camera pan.
+    """
+    x1, y1, x2, y2 = map(int, bbox)
+    h_img, w_img = frame.shape[:2]
+    x1 = max(0, min(w_img - 1, x1))
+    x2 = max(0, min(w_img, x2))
+    y1 = max(0, min(h_img - 1, y1))
+    y2 = max(0, min(h_img, y2))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    crop = frame[y1:y2, x1:x2]
+    if crop.size == 0 or crop.shape[0] < 16 or crop.shape[1] < 8:
+        return None
+
+    # Focus on central body pixels to reduce turf/background in wide boxes.
+    ch, cw = crop.shape[:2]
+    body = crop[: max(1, int(ch * 0.75)), int(cw * 0.15) : max(int(cw * 0.85), int(cw * 0.15) + 1)]
+    if body.size == 0:
+        return None
+
+    hsv = cv2.cvtColor(body, cv2.COLOR_BGR2HSV)
+    hist = cv2.calcHist([hsv], [0, 1, 2], None, [16, 8, 4], [0, 180, 0, 256, 0, 256])
+    feature = hist.flatten().astype(np.float32)
+    norm = float(np.linalg.norm(feature))
+    if norm <= 1e-6:
+        return None
+    return feature / norm
 
 def run_tracking_pipeline(
     video_path: str,
@@ -49,8 +89,12 @@ def run_tracking_pipeline(
     fps = float(cap.get(cv2.CAP_PROP_FPS))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     dt = 1.0 / fps if fps > 0 else 1.0 / 30.0
+    tracker_imgsz = TRACKER_IMGSZ
     
-    logger.info(f"Loaded input video: {width}x{height} @ {fps}fps, {total_frames} frames.")
+    logger.info(
+        f"Loaded input video: {width}x{height} @ {fps}fps, {total_frames} frames. "
+        f"Tracker inference size: {tracker_imgsz}px."
+    )
     
     # 0. Check for tracking cache (version-gated)
     cache_path = os.path.join(os.path.dirname(export_json_path), "tracking_cache.pkl")
@@ -160,6 +204,7 @@ def run_tracking_pipeline(
     stat_trackers: Dict[int, PlayerStatsTracker] = {}
     raw_frame_detections: Dict[int, List[Dict[str, Any]]] = {}
     raw_ball_detections: Dict[int, List[List[float]]] = {}
+    track_appearance_samples: Dict[int, List[np.ndarray]] = defaultdict(list)
     
     frame_idx = 0
     new_tracks_to_cache: Dict[int, List[Dict[str, Any]]] = {}
@@ -180,9 +225,9 @@ def run_tracking_pipeline(
                 persist=True,
                 tracker=tracker_config_path, # BoT-SORT + ReID + sparse-optical-flow GMC
                 classes=[0, 32],
-                conf=0.30, # Raised from 0.10 -> 0.30: stops noise from spawning low-confidence ghost tracks
+                conf=0.20, # Keep weaker player detections alive; tracker config controls new ID creation.
                 iou=0.60,
-                imgsz=1280,
+                imgsz=tracker_imgsz,
                 verbose=False
             )
             
@@ -249,6 +294,9 @@ def run_tracking_pipeline(
                 
                 # 4b. Team Classification (per raw track ID — gets re-aggregated after stitching)
                 team_id = team_assigner.get_player_team(frame, [x1, y1, x2, y2], track_id)
+                appearance = _extract_player_appearance(frame, [x1, y1, x2, y2])
+                if appearance is not None and len(track_appearance_samples[track_id]) < 48:
+                    track_appearance_samples[track_id].append(appearance)
                 
                 frame_player_detections.append({
                     "raw_id": track_id,
@@ -289,6 +337,7 @@ def run_tracking_pipeline(
     raw_id_to_canonical, canonical_to_team = stitch_fragments(
         stat_trackers=stat_trackers,
         team_dict=team_assigner.player_team_dict,
+        appearance_samples=track_appearance_samples,
         fps=fps,
     )
     

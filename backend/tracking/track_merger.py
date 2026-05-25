@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Tuple, Any
 from collections import defaultdict
+import numpy as np
 from loguru import logger
 
 
@@ -33,17 +34,21 @@ MAX_TIME_OVERLAP_FRAMES = 5      # Allow tiny overlap (~0.17s @ 30fps) to be rob
 
 # Greedy merge limits
 MAX_FRAGMENTS_PER_PLAYER = 25    # Safety cap — if a cluster grows beyond this, refuse to extend
-MAX_TIME_GAP_S = 8.0             # Don't try to stitch fragments separated by > 8 seconds
+MAX_TIME_GAP_S = 15.0            # Short camera pans/occlusions can easily exceed 8 seconds.
+APPEARANCE_MERGE_SIM = 0.78      # HSV histogram cosine similarity for same-person candidates.
+APPEARANCE_STRONG_SIM = 0.88     # Strong visual match can tolerate rougher homography motion.
 
 
 class _Fragment:
     """A single raw track summarized by the stats it gives us for merging."""
     __slots__ = ("raw_id", "team", "first_frame", "last_frame", "first_xy", "last_xy",
-                 "last_vel", "duration_frames", "num_observations")
+                 "last_vel", "duration_frames", "num_observations", "appearance")
 
-    def __init__(self, raw_id: int, team: int, path: List[Dict[str, Any]]):
+    def __init__(self, raw_id: int, team: int, path: List[Dict[str, Any]],
+                 appearance: np.ndarray | None = None):
         self.raw_id = raw_id
         self.team = team
+        self.appearance = appearance
         self.num_observations = len(path)
         self.first_frame = path[0]["frame"]
         self.last_frame = path[-1]["frame"]
@@ -62,8 +67,25 @@ class _Fragment:
             self.last_vel = (0.0, 0.0)
 
 
+def _appearance_mean(samples: List[np.ndarray]) -> np.ndarray | None:
+    if not samples:
+        return None
+    feature = np.mean(np.stack(samples, axis=0), axis=0).astype(np.float32)
+    norm = float(np.linalg.norm(feature))
+    if norm <= 1e-6:
+        return None
+    return feature / norm
+
+
+def _appearance_similarity(a: _Fragment, b: _Fragment) -> float | None:
+    if a.appearance is None or b.appearance is None:
+        return None
+    return float(np.dot(a.appearance, b.appearance))
+
+
 def _build_fragments(stat_trackers: Dict[int, Any], team_dict: Dict[int, int],
-                     fps: float) -> List[_Fragment]:
+                     fps: float,
+                     appearance_samples: Dict[int, List[np.ndarray]] | None = None) -> List[_Fragment]:
     """Build the list of fragments from raw stat trackers, dropping ultra-short noise."""
     min_frames = max(1, int(MIN_TRACK_DURATION_S * fps))
     fragments: List[_Fragment] = []
@@ -72,7 +94,8 @@ def _build_fragments(stat_trackers: Dict[int, Any], team_dict: Dict[int, int],
         if not path or len(path) < min_frames:
             continue
         team = team_dict.get(raw_id, 2)
-        fragments.append(_Fragment(raw_id, team, path))
+        appearance = _appearance_mean(appearance_samples.get(raw_id, [])) if appearance_samples else None
+        fragments.append(_Fragment(raw_id, team, path, appearance))
     return fragments
 
 
@@ -104,15 +127,23 @@ def _merge_cost(a: _Fragment, b: _Fragment, fps: float) -> float:
     actual_x, actual_y = b.first_xy
     predicted_error = math.hypot(predicted_x - actual_x, predicted_y - actual_y)
     raw_gap_distance = math.hypot(actual_x - a.last_xy[0], actual_y - a.last_xy[1])
+    appearance_sim = _appearance_similarity(a, b)
 
     # Implied average speed if a and b were the same player
     implied_speed = raw_gap_distance / time_gap_s
-    if implied_speed > MAX_SUSTAINED_SPEED_MPS:
+    max_speed = MAX_SUSTAINED_SPEED_MPS * (1.35 if appearance_sim and appearance_sim >= APPEARANCE_STRONG_SIM else 1.0)
+    if implied_speed > max_speed:
         return math.inf
 
     # Cost: weighted sum favoring small motion-predicted error and short gaps.
     # 1 m position error ~= 1 second gap ~= 1 m/s implied speed in units.
-    return predicted_error + 0.5 * time_gap_s + 0.3 * implied_speed
+    cost = predicted_error + 0.5 * time_gap_s + 0.3 * implied_speed
+    if appearance_sim is not None:
+        if appearance_sim < APPEARANCE_MERGE_SIM:
+            return math.inf
+        # Same-looking tracklets should be preferred, but still need plausible motion.
+        cost -= 5.0 * (appearance_sim - APPEARANCE_MERGE_SIM)
+    return cost
 
 
 def _cluster_is_valid(fragments: List[_Fragment], fps: float) -> bool:
@@ -168,7 +199,8 @@ class _UnionFind:
 
 
 def stitch_fragments(stat_trackers: Dict[int, Any], team_dict: Dict[int, int],
-                     fps: float) -> Tuple[Dict[int, int], Dict[int, int]]:
+                     fps: float,
+                     appearance_samples: Dict[int, List[np.ndarray]] | None = None) -> Tuple[Dict[int, int], Dict[int, int]]:
     """
     Run greedy lowest-cost union-find stitching across fragments.
 
@@ -181,7 +213,7 @@ def stitch_fragments(stat_trackers: Dict[int, Any], team_dict: Dict[int, int],
         (raw_id_to_canonical, canonical_to_team)
         canonical IDs are assigned 1..N, ordered by total active frames descending.
     """
-    fragments = _build_fragments(stat_trackers, team_dict, fps)
+    fragments = _build_fragments(stat_trackers, team_dict, fps, appearance_samples)
     if not fragments:
         return {}, {}
 
