@@ -402,11 +402,11 @@ export const AnalyticsView: React.FC = () => {
 
           <div className="space-y-2 relative z-10">
             <span className="px-3 py-1 rounded-full bg-emerald-950/40 border border-emerald-500/20 text-xs font-semibold text-emerald-400 uppercase tracking-widest animate-pulse">
-              AI Tracking Engaged
+              SAM 3 Tracking Engaged
             </span>
             <h3 className="text-2xl font-black text-gray-100 mt-2">Processing Match Video</h3>
             <p className="text-sm text-gray-400 max-w-md mx-auto">
-              FastAPI is currently running YOLOv8 detection and ByteTrack tracking on each video frame, smoothing pathways with Kalman Filters.
+              YOLOv8 detects players each frame. Meta's SAM 3 segments and propagates pixel-accurate masks, producing stable player IDs via its video memory bank. Kalman filters smooth pitch coordinates.
             </p>
           </div>
 
@@ -449,6 +449,10 @@ export const AnalyticsView: React.FC = () => {
         <div className="flex items-center gap-4">
           <span className="px-3 py-1 rounded-full bg-indigo-950/50 border border-indigo-500/20 text-xs font-extrabold text-indigo-400 tracking-wider">
             Match Analytics cockpit
+          </span>
+          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-950/50 border border-purple-500/30 text-xs font-extrabold text-purple-300 tracking-wider shadow-[0_0_12px_rgba(168,85,247,0.15)]">
+            <Sparkles className="w-3 h-3" />
+            SAM 3 Powered
           </span>
           <h2 className="text-lg font-black text-gray-200">
             {videoMetadata.filename}

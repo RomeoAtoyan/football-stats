@@ -580,8 +580,13 @@ export const UploadView: React.FC = () => {
         <h1 className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-indigo-400 to-cyan-400 tracking-tight mb-4 uppercase">
           Tactical Player Vision
         </h1>
+        <div className="flex items-center justify-center gap-2 mb-3">
+          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-950/60 border border-purple-500/40 text-xs font-extrabold text-purple-300 tracking-wider shadow-[0_0_16px_rgba(168,85,247,0.2)]">
+            ✦ Powered by Meta SAM 3
+          </span>
+        </div>
         <p className="text-gray-400 text-sm leading-relaxed">
-          Upload any match video. Our AI tracking engine automatically detects players, clusters jersey colors, and groups players into teams. We visualize team paths in glowing <span className="text-purple-400 font-bold">Purple</span> & <span className="text-cyan-400 font-bold">Aqua</span> bounding boxes.
+          Upload any match video. Meta's <span className="text-purple-400 font-bold">SAM 3</span> segments every player with pixel-accurate masks and propagates stable IDs across the entire video via its video memory bank — no Re-ID model needed. Teams are visualized in glowing <span className="text-purple-400 font-bold">Purple</span> &amp; <span className="text-cyan-400 font-bold">Aqua</span>.
         </p>
       </div>
 
