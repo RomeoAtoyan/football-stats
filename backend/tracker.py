@@ -258,12 +258,22 @@ class SAM3Tracker:
                             kf.predict()
                             x_field, y_field = kf.update(x_field_raw, y_field_raw)
                             
+                            # Calculate bounding box from mask for overlay rendering
+                            coords = np.argwhere(mask)
+                            if len(coords) > 0:
+                                min_v, min_u = np.min(coords, axis=0)
+                                max_v, max_u = np.max(coords, axis=0)
+                                bbox = [float(min_u), float(min_v), float(max_u - min_u), float(max_v - min_v)]
+                            else:
+                                bbox = [u - 25, v - 75, 50, 80] # Fallback standard dimensions
+                            
                             frame_records.append({
                                 "id": tid,
                                 "pixel_x": u,
                                 "pixel_y": v,
                                 "field_x": x_field,
-                                "field_y": y_field
+                                "field_y": y_field,
+                                "bbox": bbox
                             })
                 yield {"frame_index": frame_idx, "detections": frame_records}
         else:
@@ -288,6 +298,11 @@ class SAM3Tracker:
                     kf.predict()
                     x_field, y_field = kf.update(x_proj_raw, y_proj_raw)
                     
+                    # Simulated bounding box sizes based on coordinates
+                    sim_w = 40.0 + (v / 1080.0) * 30.0
+                    sim_h = 70.0 + (v / 1080.0) * 45.0
+                    bbox = [u - sim_w / 2.0, v - sim_h, sim_w, sim_h]
+                    
                     frame_records.append({
                         "id": tid,
                         "team": item["team"],
@@ -295,7 +310,8 @@ class SAM3Tracker:
                         "pixel_x": u,
                         "pixel_y": v,
                         "field_x": x_field,
-                        "field_y": y_field
+                        "field_y": y_field,
+                        "bbox": bbox
                     })
                 
                 time.sleep(0.05)  # Simulate ~20 FPS frame latency

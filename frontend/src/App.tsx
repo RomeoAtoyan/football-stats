@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import CalibrationPanel from './components/CalibrationPanel';
 import TacticalPitch from './components/TacticalPitch';
-import { Play, Pause, Video, Upload, Activity, ShieldAlert, Sparkles } from 'lucide-react';
+import TrackingMonitor from './components/TrackingMonitor';
+import { Play, Pause, Video, Upload, Activity, ShieldAlert, Sparkles, LayoutGrid, Eye } from 'lucide-react';
 
 export default function App() {
   const [videoStatus, setVideoStatus] = useState<string>("idle");
@@ -12,6 +13,10 @@ export default function App() {
   const [rmse, setRmse] = useState<number | null>(null);
   const [simModeActive, setSimModeActive] = useState<boolean>(false);
   const [totalFrames, setTotalFrames] = useState<number>(10);
+  
+  // Tracking states
+  const [frameIdx, setFrameIdx] = useState<number>(0);
+  const [activeTab, setActiveTab] = useState<'video' | 'pitch'>('video');
 
   // Attempt to load pre-saved calibration when component mounts
   useEffect(() => {
@@ -70,6 +75,7 @@ export default function App() {
       }
       setWsActive(false);
       setTrackingData([]);
+      setFrameIdx(0);
       return;
     }
 
@@ -82,7 +88,11 @@ export default function App() {
         const data = JSON.parse(event.data);
         if (data.detections) {
           setTrackingData(data.detections);
-        } else if (data.error) {
+        }
+        if (data.frame_index !== undefined) {
+          setFrameIdx(data.frame_index);
+        }
+        if (data.error) {
           console.error("Backend pipeline error:", data.error);
         }
       } catch (err) {
@@ -93,6 +103,7 @@ export default function App() {
     ws.onclose = () => {
       setWsActive(false);
       setTrackingData([]);
+      setFrameIdx(0);
     };
 
     ws.onerror = (err) => {
@@ -208,7 +219,7 @@ export default function App() {
           />
         </div>
 
-        {/* Right Side: Tracking Controllers & Birds Eye view */}
+        {/* Right Side: Tracking Controllers & Birds Eye view / Live video view */}
         <div className="flex flex-col gap-8">
           
           {/* Tracking Controller */}
@@ -243,8 +254,43 @@ export default function App() {
             </button>
           </div>
 
-          {/* Birds-Eye view Pitch Canvas representation */}
-          <TacticalPitch trackingData={trackingData} wsActive={wsActive} />
+          {/* Premium Selector Tabs */}
+          <div className="flex bg-slate-950/60 p-1.5 rounded-xl border border-slate-800/80 self-start">
+            <button
+              onClick={() => setActiveTab('video')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                activeTab === 'video' 
+                  ? 'bg-amber-600 text-white shadow-md' 
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Live Camera Overlay</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('pitch')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                activeTab === 'pitch' 
+                  ? 'bg-amber-600 text-white shadow-md' 
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>2D Tactical Map</span>
+            </button>
+          </div>
+
+          {/* Dynamically switched screen representation */}
+          {activeTab === 'video' ? (
+            <TrackingMonitor 
+              trackingData={trackingData} 
+              wsActive={wsActive} 
+              frameIdx={frameIdx} 
+              simModeActive={simModeActive}
+            />
+          ) : (
+            <TacticalPitch trackingData={trackingData} wsActive={wsActive} />
+          )}
         </div>
 
       </main>
