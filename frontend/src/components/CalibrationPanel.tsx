@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Sliders, Target, Camera, CheckCircle, AlertTriangle, Trash2, Settings, ZoomIn, ZoomOut, Maximize2, Minimize2, Move } from 'lucide-react';
+import { Sliders, Target, Camera, CheckCircle, AlertTriangle, Trash2, Settings, ZoomIn, ZoomOut, Maximize2, Minimize2, Hand, X, Grid } from 'lucide-react';
 
 const FIFA_PITCH_LINES = [
   // Outer boundary line (30m x 16m)
@@ -12,7 +12,7 @@ const FIFA_PITCH_LINES = [
   [[30, 3.0], [24.0, 3.0], [24.0, 13.0], [30, 13.0]],
 ];
 
-// Curated landmarks for the 30m x 16m pitch, including all four outer corners
+// Curated landmarks for the 30m x 16m pitch
 const LANDMARKS = [
   { id: 'top_left_corner', name: 'Top-Left Corner', x: 0.0, y: 0.0, color: '#ec4899' },
   { id: 'bottom_left_corner', name: 'Bottom-Left Corner', x: 0.0, y: 16.0, color: '#ec4899' },
@@ -47,7 +47,7 @@ export default function CalibrationPanel({
   const videoWidth = 1920;
   const videoHeight = 1080;
 
-  // Manual mapping coordinates dictionary
+  // Manual mapping coordinates dictionary: Key is landmark ID, Value is [pixelX, pixelY]
   const [mappedPixels, setMappedPixels] = useState<Record<string, [number, number]>>({});
   const [activeLandmarkId, setActiveLandmarkId] = useState<string>(LANDMARKS[5].id); // Default to Center Spot
   
@@ -69,6 +69,9 @@ export default function CalibrationPanel({
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [clickStart, setClickStart] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [spacePressed, setSpacePressed] = useState<boolean>(false);
+  const [draggingPinId, setDraggingPinId] = useState<string | null>(null);
+  const [showGridOverlay, setShowGridOverlay] = useState<boolean>(true);
 
   // Lens distortion parameters
   const [lens, setLens] = useState({
@@ -82,9 +85,34 @@ export default function CalibrationPanel({
     p2: 0.0
   });
 
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const initialLoadDone = useRef(false);
+
+  const effectiveTool = spacePressed ? 'pan' : activeTool;
+
+  // Keyboard Spacebar / Shift pan toggle shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && e.target === document.body) {
+        e.preventDefault();
+        setSpacePressed(true);
+      }
+    };
+    
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setSpacePressed(false);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
 
   // Sync coordinates arrays whenever mappedPixels dictionary changes
   useEffect(() => {
@@ -92,8 +120,9 @@ export default function CalibrationPanel({
     const wrldPts: [number, number][] = [];
     
     LANDMARKS.forEach(lm => {
-      if (mappedPixels[lm.id]) {
-        imgPts.push(mappedPixels[lm.id]);
+      const pt = mappedPixels[lm.id];
+      if (pt) {
+        imgPts.push(pt);
         wrldPts.push([lm.x, lm.y]);
       }
     });
@@ -121,171 +150,45 @@ export default function CalibrationPanel({
     }
   }, [savedCalibration]);
 
-  // Visual simulated stadium fallback view matching the 30m x 16m bounds
-  const drawSimulatedStadium = (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
-    ctx.fillStyle = '#081c15';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    for (let i = 0; i < canvas.width; i += 80) {
-      ctx.fillStyle = i % 160 === 0 ? '#1b4332' : '#2d6a4f';
-      ctx.beginPath();
-      ctx.moveTo(i, 150);
-      ctx.lineTo(i + 80, 150);
-      ctx.lineTo(i * 1.3 + 200, canvas.height);
-      ctx.lineTo((i - 80) * 1.3 + 200, canvas.height);
-      ctx.fill();
-    }
-
-    ctx.fillStyle = 'rgba(64, 145, 108, 0.15)';
-    ctx.beginPath();
-    ctx.arc(canvas.width / 2, -100, 300, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(0, 120, canvas.width, 30);
-    ctx.strokeStyle = '#334155';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0, 120, canvas.width, 30);
-
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = 'bold 10px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText("• PITCHTRACK AI 30x16m CAMERA FEED (1920x1080) •", canvas.width / 2, 140);
-
-    // Adjusted perspective transforms for futsal 30x16m scale
-    const project = (wx: number, wy: number) => {
-      const px = 200 + wx * 18.0 + (wy - 8.0) * (wx - 15.0) * 0.22;
-      const py = 150 + wy * 13.5 + wx * 2.5;
-      return [px, py];
-    };
-
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.lineWidth = 2.5;
-
-    // Draw white markings
-    FIFA_PITCH_LINES.forEach(line => {
-      ctx.beginPath();
-      line.forEach((pt, idx) => {
-        const [px, py] = project(pt[0], pt[1]);
-        if (idx === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-    });
-
-    // Center circle
-    ctx.beginPath();
-    for (let theta = 0; theta <= Math.PI * 2; theta += 0.1) {
-      const cx = 15.0 + 3.0 * Math.sin(theta);
-      const cy = 8.0 + 3.0 * Math.cos(theta);
-      const [px, py] = project(cx, cy);
-      if (theta === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    }
-    ctx.stroke();
-
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-    const [lpx, lpy] = project(6.0, 8.0);
-    ctx.beginPath(); ctx.arc(lpx, lpy, 4, 0, Math.PI * 2); ctx.fill();
-    const [rpx, rpy] = project(24.0, 8.0);
-    ctx.beginPath(); ctx.arc(rpx, rpy, 4, 0, Math.PI * 2); ctx.fill();
-
-    // Goals (Centered on Y=8.0, 3m wide)
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 4;
-    const [lgtx, lgty] = project(0, 6.5);
-    const [lgbx, lgby] = project(0, 9.5);
-    ctx.beginPath(); ctx.moveTo(lgtx, lgty); ctx.lineTo(lgbx, lgby); ctx.stroke();
-    const [rgtx, rgty] = project(30, 6.5);
-    const [rgbx, rgby] = project(30, 9.5);
-    ctx.beginPath(); ctx.moveTo(rgtx, rgty); ctx.lineTo(rgbx, rgby); ctx.stroke();
-
-    ctx.fillStyle = 'rgba(11, 15, 25, 0.85)';
-    ctx.fillRect(20, 20, 360, 48);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-    ctx.strokeRect(20, 20, 360, 48);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText("1. Click a landmark target on the 2D Pitch Sidebar map", 35, 36);
-    ctx.fillText("2. Click on the camera field below to assign coordinates", 35, 52);
-  };
-
-  const drawPitchMarkingsOverlay = (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
-    ctx.fillStyle = 'rgba(11, 15, 25, 0.85)';
-    ctx.fillRect(20, 20, 380, 48);
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-    ctx.strokeRect(20, 20, 380, 48);
-    
-    ctx.fillStyle = '#10b981';
-    ctx.font = 'bold 11px monospace';
-    ctx.textAlign = 'left';
-    ctx.fillText(`• ACTIVE WORKSPACE FRAME: #${currentFrameIdx}`, 32, 36);
-    
-    const activeLM = LANDMARKS.find(l => l.id === activeLandmarkId);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '10px sans-serif';
-    ctx.fillText(`Targeting landmark: ${activeLM?.name || ''} (Click to assign)`, 32, 52);
-  };
-
   // Reset image load failure states when frame or video context changes
   useEffect(() => {
     setImgLoadFailed(false);
   }, [currentFrameIdx, videoStatus]);
 
-  // Draw simulated stadium on canvas for fallback/simulator mode
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+  // Zoom center on mouse cursor scroll handler
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawSimulatedStadium(ctx, canvas);
-  }, [videoStatus, simModeActive, imgLoadFailed, isStudioOpen]);
+    const cursorX = e.clientX - rect.left;
+    const cursorY = e.clientY - rect.top;
 
-  // Imperative wheel zoom listener on container for passive: false prevention
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const zoomFactor = 1.15;
+    const isZoomIn = e.deltaY < 0;
 
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const rect = container.getBoundingClientRect();
-      const cursorX = e.clientX - rect.left;
-      const cursorY = e.clientY - rect.top;
+    setZoom(prevZoom => {
+      const nextZoom = isZoomIn 
+        ? Math.min(8.0, prevZoom * zoomFactor) 
+        : Math.max(1.0, prevZoom / zoomFactor);
 
-      const zoomFactor = 1.15;
-      const isZoomIn = e.deltaY < 0;
-
-      setZoom(prevZoom => {
-        const nextZoom = isZoomIn 
-          ? Math.min(8.0, prevZoom * zoomFactor) 
-          : Math.max(1.0, prevZoom / zoomFactor);
-
-        if (nextZoom === 1.0) {
-          setPanX(0);
-          setPanY(0);
-        } else {
-          setPanX(prevPanX => cursorX - (nextZoom / prevZoom) * (cursorX - prevPanX));
-          setPanY(prevPanY => cursorY - (nextZoom / prevZoom) * (cursorY - prevPanY));
-        }
-        return nextZoom;
-      });
-    };
-
-    container.addEventListener('wheel', onWheel, { passive: false });
-    return () => {
-      container.removeEventListener('wheel', onWheel);
-    };
-  }, []);
+      if (nextZoom === 1.0) {
+        setPanX(0);
+        setPanY(0);
+      } else {
+        setPanX(prevPanX => cursorX - (nextZoom / prevZoom) * (cursorX - prevPanX));
+        setPanY(prevPanY => cursorY - (nextZoom / prevZoom) * (cursorY - prevPanY));
+      }
+      return nextZoom;
+    });
+  };
 
   const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.button !== 0 && e.button !== 1) return; // Left or middle click only
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    if (activeTool === 'pan' || e.button === 1 || e.shiftKey) {
+    if (effectiveTool === 'pan' || e.button === 1 || e.shiftKey) {
       setIsDragging(true);
       setDragStart({ x: e.clientX - panX, y: e.clientY - panY });
       e.preventDefault();
@@ -298,18 +201,7 @@ export default function CalibrationPanel({
     if (isDragging) {
       setPanX(e.clientX - dragStart.x);
       setPanY(e.clientY - dragStart.y);
-    }
-  };
-
-  const handleMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (isDragging) {
-      setIsDragging(false);
-      return;
-    }
-
-    const dx = Math.abs(e.clientX - clickStart.x);
-    const dy = Math.abs(e.clientY - clickStart.y);
-    if (dx < 4 && dy < 4 && activeTool === 'map') {
+    } else if (draggingPinId) {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
 
@@ -319,7 +211,40 @@ export default function CalibrationPanel({
       const xOrig = (clickX - panX) / zoom;
       const yOrig = (clickY - panY) / zoom;
 
-      // Convert back to 1920x1080 pixel coordinates relative to original 1080p foot print
+      const finalX = Math.max(0, Math.min(videoWidth, (xOrig / rect.width) * videoWidth));
+      const finalY = Math.max(0, Math.min(videoHeight, (yOrig / rect.height) * videoHeight));
+
+      setMappedPixels(prev => ({
+        ...prev,
+        [draggingPinId]: [finalX, finalY]
+      }));
+    }
+  };
+
+  const handleMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (isDragging) {
+      setIsDragging(false);
+      return;
+    }
+
+    if (draggingPinId) {
+      setDraggingPinId(null);
+      return;
+    }
+
+    const dx = Math.abs(e.clientX - clickStart.x);
+    const dy = Math.abs(e.clientY - clickStart.y);
+    if (dx < 4 && dy < 4 && effectiveTool === 'map') {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      const xOrig = (clickX - panX) / zoom;
+      const yOrig = (clickY - panY) / zoom;
+
+      // Convert back to 1920x1080 pixel coordinates relative to original 1080p footprint
       const finalX = (xOrig / rect.width) * videoWidth;
       const finalY = (yOrig / rect.height) * videoHeight;
 
@@ -335,6 +260,14 @@ export default function CalibrationPanel({
 
   const handleMouseLeave = () => {
     setIsDragging(false);
+    setDraggingPinId(null);
+  };
+
+  const handlePinMouseDown = (e: React.MouseEvent, landmarkId: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDraggingPinId(landmarkId);
+    setActiveLandmarkId(landmarkId);
   };
 
   const removeLandmarkMapping = (landmarkId: string) => {
@@ -378,34 +311,51 @@ export default function CalibrationPanel({
     }
   };
 
-  const submitCalibration = async () => {
-    const imgPts = Object.values(mappedPixels);
-    const wrldPts: [number, number][] = [];
-    
-    LANDMARKS.forEach(lm => {
-      if (mappedPixels[lm.id]) {
-        wrldPts.push([lm.x, lm.y]);
-      }
-    });
-
-    if (imgPts.length < 4) return;
+  const recalculateLiveHomography = async () => {
+    if (imagePoints.length < 4) return;
     
     try {
       const calibRes = await fetch("http://localhost:8000/api/calibrate/homography", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image_points: imgPts, world_points: wrldPts })
+        body: JSON.stringify({ image_points: imagePoints, world_points: worldPoints })
       });
       
       if (calibRes.ok) {
         const result = await calibRes.json();
         setRmse(result.rmse);
-        
         await triggerGridWarping();
-        onCalibrationSuccess(result.homography, result.points || [], result.rmse);
+        return result;
       }
     } catch (err) {
-      console.error("Calibration failed:", err);
+      console.error("Failed to recalculate live homography in background:", err);
+    }
+  };
+
+  const applyAndSaveCalibration = async () => {
+    if (imagePoints.length < 4) {
+      alert("Please map at least 4 landmarks before applying calibration.");
+      return;
+    }
+    
+    try {
+      const calibRes = await fetch("http://localhost:8000/api/calibrate/homography", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_points: imagePoints, world_points: worldPoints })
+      });
+      
+      if (calibRes.ok) {
+        const result = await calibRes.json();
+        setRmse(result.rmse);
+        onCalibrationSuccess(result.homography, result.points || [], result.rmse);
+        setIsStudioOpen(false);
+      } else {
+        alert("Calibration computation failed. Verify your keypoints and try again.");
+      }
+    } catch (err) {
+      console.error("Calibration apply failed:", err);
+      alert("Failed to connect to backend server for calibration.");
     }
   };
 
@@ -416,8 +366,8 @@ export default function CalibrationPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(lens)
       });
-      if (Object.keys(mappedPixels).length >= 4) {
-        submitCalibration();
+      if (imagePoints.length >= 4) {
+        recalculateLiveHomography();
       }
     } catch (err) {
       console.error("Lens parameters update failed:", err);
@@ -428,14 +378,100 @@ export default function CalibrationPanel({
     setLens(prev => ({ ...prev, [param]: val }));
   };
 
-  // Re-run calibration when coordinates map changes
+  // Reset grid and RMSE if mapped points drop below 4
   useEffect(() => {
-    if (Object.keys(mappedPixels).length >= 4) {
-      submitCalibration();
+    if (imagePoints.length < 4) {
+      setProjectedGrid([]);
+      setRmse(null);
     }
-  }, [mappedPixels]);
+  }, [imagePoints]);
 
-  // Main UI components layout (renders standard embedded panel or massive fullscreen precision overlay studio)
+  // Generates declarative SVG mock stadium fallback view matching the 30m x 16m bounds
+  const renderSimulatedStadiumSVG = () => {
+    const project = (wx: number, wy: number) => {
+      const px = 200 + wx * 18.0 + (wy - 8.0) * (wx - 15.0) * 0.22;
+      const py = 150 + wy * 13.5 + wx * 2.5;
+      return [px * 2, py * 2];
+    };
+
+    const lines: [number, number][][] = [];
+    FIFA_PITCH_LINES.forEach(line => {
+      const projectedLine = line.map(pt => project(pt[0], pt[1]) as [number, number]);
+      lines.push(projectedLine);
+    });
+
+    const centerCirclePoints: [number, number][] = [];
+    for (let theta = 0; theta <= Math.PI * 2; theta += 0.1) {
+      const cx = 15.0 + 3.0 * Math.sin(theta);
+      const cy = 8.0 + 3.0 * Math.cos(theta);
+      centerCirclePoints.push(project(cx, cy) as [number, number]);
+    }
+
+    const leftGoalTop = project(0, 6.5);
+    const leftGoalBottom = project(0, 9.5);
+    const rightGoalTop = project(30, 6.5);
+    const rightGoalBottom = project(30, 9.5);
+
+    const leftPenaltySpot = project(6.0, 8.0);
+    const rightPenaltySpot = project(24.0, 8.0);
+
+    return (
+      <svg viewBox="0 0 1920 1080" className="w-full h-full object-cover select-none bg-[#081c15]" draggable={false}>
+        {/* Draw lawn stripes */}
+        {Array.from({ length: 12 }).map((_, i) => {
+          const wx1 = i * 2.5;
+          const wx2 = (i + 1) * 2.5;
+          const p1 = project(wx1, 0);
+          const p2 = project(wx2, 0);
+          const p3 = project(wx2, 16);
+          const p4 = project(wx1, 16);
+          const fill = i % 2 === 0 ? '#1b4332' : '#2d6a4f';
+          return (
+            <polygon
+              key={i}
+              points={`${p1[0]},${p1[1]} ${p2[0]},${p2[1]} ${p3[0]},${p3[1]} ${p4[0]},${p4[1]}`}
+              fill={fill}
+              opacity="0.95"
+            />
+          );
+        })}
+
+        {/* Outer boundaries and lines */}
+        {lines.map((line, idx) => (
+          <polyline
+            key={idx}
+            points={line.map(p => `${p[0]},${p[1]}`).join(' ')}
+            fill="none"
+            stroke="rgba(255, 255, 255, 0.65)"
+            strokeWidth="5"
+          />
+        ))}
+
+        {/* Center circle */}
+        <polyline
+          points={centerCirclePoints.map(p => `${p[0]},${p[1]}`).join(' ')}
+          fill="none"
+          stroke="rgba(255, 255, 255, 0.65)"
+          strokeWidth="5"
+        />
+
+        {/* Penalty spots */}
+        <circle cx={leftPenaltySpot[0]} cy={leftPenaltySpot[1]} r="7" fill="rgba(255, 255, 255, 0.95)" />
+        <circle cx={rightPenaltySpot[0]} cy={rightPenaltySpot[1]} r="7" fill="rgba(255, 255, 255, 0.95)" />
+
+        {/* Goal lines */}
+        <line x1={leftGoalTop[0]} y1={leftGoalTop[1]} x2={leftGoalBottom[0]} y2={leftGoalBottom[1]} stroke="#ffffff" strokeWidth="8" />
+        <line x1={rightGoalTop[0]} y1={rightGoalTop[1]} x2={rightGoalBottom[0]} y2={rightGoalBottom[1]} stroke="#ffffff" strokeWidth="8" />
+
+        {/* Header Ribbon overlay */}
+        <rect x="0" y="240" width="1920" height="60" fill="#0f172a" stroke="#334155" strokeWidth="2" />
+        <text x="960" y="278" fill="#f8fafc" fontSize="20" fontWeight="bold" fontFamily="monospace" textAnchor="middle">
+          • PITCHTRACK AI 30x16m CAMERA FEED (1920x1080) •
+        </text>
+      </svg>
+    );
+  };
+
   const renderWorkspaceLayout = () => {
     const activeLM = LANDMARKS.find(l => l.id === activeLandmarkId);
     const activePixel = mappedPixels[activeLandmarkId];
@@ -451,7 +487,7 @@ export default function CalibrationPanel({
             <button
               onClick={() => setActiveTool('map')}
               className={`p-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer ${
-                activeTool === 'map' ? 'bg-amber-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'
+                effectiveTool === 'map' ? 'bg-amber-600 text-white shadow-md shadow-amber-900/20' : 'bg-slate-900 text-slate-400 hover:text-white'
               }`}
               title="Place targets on the video"
             >
@@ -461,25 +497,25 @@ export default function CalibrationPanel({
             <button
               onClick={() => setActiveTool('pan')}
               className={`p-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition cursor-pointer ${
-                activeTool === 'pan' ? 'bg-amber-600 text-white' : 'bg-slate-900 text-slate-400 hover:text-white'
+                effectiveTool === 'pan' ? 'bg-amber-600 text-white shadow-md shadow-amber-900/20' : 'bg-slate-900 text-slate-400 hover:text-white'
               }`}
               title="Click and drag to pan field"
             >
-              <Move className="w-4 h-4" />
+              <Hand className="w-4 h-4" />
               <span className="hidden sm:inline">Pan</span>
             </button>
 
             <div className="h-4 w-[1px] bg-slate-800" />
 
             <button
-              onClick={() => setZoom(prev => Math.min(prev + 0.25, 4.0))}
+              onClick={() => adjustZoom(0.5)}
               className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg transition cursor-pointer"
               title="Zoom In"
             >
               <ZoomIn className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setZoom(prev => Math.max(prev - 0.25, 1.0))}
+              onClick={() => adjustZoom(-0.5)}
               className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg transition cursor-pointer"
               title="Zoom Out"
             >
@@ -495,19 +531,21 @@ export default function CalibrationPanel({
             </button>
           </div>
 
-          {/* Interactive Workspace Area (Translated & Scaled via React state transform) */}
+          {/* Interactive Workspace Area */}
           <div 
             ref={containerRef}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseLeave}
-            className={`relative border border-slate-800/80 rounded-xl overflow-hidden bg-black aspect-video group shadow-inner flex-1 min-h-[420px] select-none ${
-              activeTool === 'pan' 
+            onWheel={handleWheel}
+            className={`relative border border-slate-800/80 rounded-xl overflow-hidden bg-black w-full aspect-video group shadow-inner select-none ${
+              effectiveTool === 'pan' 
                 ? isDragging ? 'cursor-grabbing' : 'cursor-grab' 
-                : 'cursor-crosshair'
+                : draggingPinId ? 'cursor-grabbing' : 'cursor-crosshair'
             }`}
           >
+            {/* Viewport Scaled and Panned via CSS transforms (V4 style: pins placed inside automatically scale together) */}
             <div 
               style={{ 
                 transform: `translate(${panX}px, ${panY}px) scale(${zoom})`, 
@@ -523,25 +561,20 @@ export default function CalibrationPanel({
                   src={`http://localhost:8000/api/video/frame/${currentFrameIdx}?t=${currentFrameIdx}`}
                   alt="Video Frame"
                   onError={() => setImgLoadFailed(true)}
-                  className="w-full h-full object-cover select-none pointer-events-none"
+                  className="w-full h-full object-fill select-none pointer-events-none"
                   draggable={false}
                 />
               ) : (
-                <canvas
-                  ref={canvasRef}
-                  width={960}
-                  height={540}
-                  className="w-full h-full object-cover pointer-events-none"
-                />
+                renderSimulatedStadiumSVG()
               )}
 
-              {/* SVG overlay wrapper */}
+              {/* SVG grid lines overlay */}
               <svg 
                 className="absolute inset-0 w-full h-full pointer-events-none z-10 select-none" 
                 viewBox={`0 0 ${videoWidth} ${videoHeight}`}
               >
-                {/* Warped Distorted Calibration lines */}
-                {projectedGrid.map((line, i) => (
+                {/* Warped Distorted Calibration grid */}
+                {showGridOverlay && projectedGrid.map((line, i) => (
                   <polyline
                     key={i}
                     points={line.map(pt => `${pt[0]},${pt[1]}`).join(' ')}
@@ -554,44 +587,37 @@ export default function CalibrationPanel({
                     strokeDasharray="4 8"
                   />
                 ))}
-
-                {/* Circle control marks */}
-                {LANDMARKS.map((lm) => {
-                  const pt = mappedPixels[lm.id];
-                  if (!pt) return null;
-                  const isSelected = activeLandmarkId === lm.id;
-                  return (
-                    <g key={lm.id}>
-                      <circle 
-                        cx={pt[0]} 
-                        cy={pt[1]} 
-                        r={isSelected ? "22" : "12"} 
-                        fill={lm.color} 
-                        opacity="0.25"
-                      />
-                      <circle 
-                        cx={pt[0]} 
-                        cy={pt[1]} 
-                        r="6" 
-                        fill={lm.color} 
-                        stroke="#ffffff"
-                        strokeWidth="2.5"
-                      />
-                      <text
-                        x={pt[0]}
-                        y={pt[1] - 16}
-                        fill={lm.color}
-                        fontSize="14"
-                        fontWeight="bold"
-                        textAnchor="middle"
-                        style={{ textShadow: '0px 0px 4px rgba(0,0,0,0.9)' }}
-                      >
-                        {lm.name}
-                      </text>
-                    </g>
-                  );
-                })}
               </svg>
+
+              {/* Pin overlays placed relatively inside the zoomed wrapper to preserve mapping position */}
+              {LANDMARKS.map((lm, idx) => {
+                const pt = mappedPixels[lm.id];
+                if (!pt) return null;
+                const isSelected = activeLandmarkId === lm.id;
+                const screenX = (pt[0] / videoWidth) * 100;
+                const screenY = (pt[1] / videoHeight) * 100;
+
+                return (
+                  <div
+                    key={lm.id}
+                    onMouseDown={(e) => handlePinMouseDown(e, lm.id)}
+                    className={`absolute w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-black text-white shadow-xl border-[2.5px] border-white transition-all z-20 hover:scale-115 select-none ${
+                      isSelected 
+                        ? 'bg-amber-600 shadow-[0_0_15px_#d97706] scale-110 cursor-grabbing' 
+                        : 'bg-emerald-600 shadow-[0_0_12px_#059669] cursor-grab active:cursor-grabbing'
+                    }`}
+                    style={{
+                      left: `${screenX}%`,
+                      top: `${screenY}%`,
+                      transform: 'translate(-50%, -50%)',
+                      fontFamily: 'monospace'
+                    }}
+                    title={`Drag to reposition ${lm.name}`}
+                  >
+                    {idx + 1}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -621,7 +647,7 @@ export default function CalibrationPanel({
           <div className="flex justify-between items-center bg-slate-900/30 p-2.5 rounded-lg border border-[#ffffff05] text-[10px] text-gray-500">
             <span className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
-              <span>Use mouse wheel to zoom (centered on cursor). Select Pan tool, hold Space, or hold Shift to drag & move the viewport. Click in Map mode to seed points.</span>
+              <span>Use scroll wheel to zoom (centers on cursor). Select Pan tool, hold Space, or hold Shift to drag. Click in Map mode to seed points. Drag existing pins to reposition.</span>
             </span>
             <span className="font-mono">Scale: {(zoom*100).toFixed(0)}%</span>
           </div>
@@ -629,7 +655,7 @@ export default function CalibrationPanel({
         </div>
 
         {/* Right Sidebar: VISUAL 2D TOP VIEW SOCCER FIELD LANDMARK SELECTOR */}
-        <div className="flex flex-col gap-4 bg-slate-950/20 p-4 rounded-xl border border-slate-800 justify-between">
+        <div className="flex flex-col gap-4 bg-slate-950/20 p-4 rounded-xl border border-slate-800 overflow-y-auto pr-1 scrollbar-thin">
           
           <div className="flex flex-col gap-4">
             
@@ -663,27 +689,27 @@ export default function CalibrationPanel({
                   <rect x="15" y="15" width="270" height="170" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity="0.6" />
                   <line x1="150" y1="15" x2="150" y2="185" stroke="#ffffff" strokeWidth="1.5" opacity="0.6" />
                   
-                  {/* Center circle (3.0m radius futsal standard: X=15m, Y=8m) */}
+                  {/* Center circle (3.0m radius futsal standard) */}
                   <circle cx="150" cy="100" r="27" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity="0.6" />
                   
-                  {/* Left Penalty Area (6m deep, 10m wide) */}
+                  {/* Left Penalty Area */}
                   <rect x="15" y="47" width="54" height="106" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity="0.6" />
                   
-                  {/* Right Penalty Area (6m deep, 10m wide) */}
+                  {/* Right Penalty Area */}
                   <rect x="231" y="47" width="54" height="106" fill="none" stroke="#ffffff" strokeWidth="1.5" opacity="0.6" />
 
-                  {/* Left goal (3m wide) */}
+                  {/* Left goal */}
                   <line x1="15" y1="84" x2="10" y2="84" stroke="#ffffff" strokeWidth="2" opacity="0.8" />
                   <line x1="15" y1="116" x2="10" y2="116" stroke="#ffffff" strokeWidth="2" opacity="0.8" />
                   <line x1="10" y1="84" x2="10" y2="116" stroke="#ffffff" strokeWidth="2" opacity="0.8" />
 
-                  {/* Right goal (3m wide) */}
+                  {/* Right goal */}
                   <line x1="285" y1="84" x2="290" y2="84" stroke="#ffffff" strokeWidth="2" opacity="0.8" />
                   <line x1="285" y1="116" x2="290" y2="116" stroke="#ffffff" strokeWidth="2" opacity="0.8" />
                   <line x1="290" y1="84" x2="290" y2="116" stroke="#ffffff" strokeWidth="2" opacity="0.8" />
 
                   {/* Interactive keypoint targets overlays */}
-                  {LANDMARKS.map((lm) => {
+                  {LANDMARKS.map((lm, idx) => {
                     const pixel = mappedPixels[lm.id];
                     const isSelected = activeLandmarkId === lm.id;
                     
@@ -711,7 +737,7 @@ export default function CalibrationPanel({
                         <circle 
                           cx={cx} 
                           cy={cy} 
-                          r={isSelected ? "6" : "5"} 
+                          r={isSelected ? "7" : "5.5"} 
                           fill={pixel ? "#10b981" : "#ef4444"} 
                           stroke="#ffffff"
                           strokeWidth="1.5"
@@ -751,8 +777,8 @@ export default function CalibrationPanel({
                 </div>
 
                 <div className="flex justify-between items-center py-1 px-2.5 bg-slate-950/40 rounded-lg border border-[#ffffff03] font-mono text-[10px]">
-                  <span className="text-gray-400">Mapping State:</span>
-                  <span className={`font-bold ${activePixel ? 'text-emerald-400' : 'text-amber-500 animate-pulse'}`}>
+                  <span className="text-gray-405 font-medium">Mapping:</span>
+                  <span className={`font-bold ${activePixel ? 'text-emerald-405' : 'text-amber-500 animate-pulse'}`}>
                     {activePixel ? `[${activePixel[0].toFixed(0)}px, ${activePixel[1].toFixed(0)}px]` : '⚠️ [Click Video to Assign]'}
                   </span>
                 </div>
@@ -763,90 +789,45 @@ export default function CalibrationPanel({
 
           {/* Quick list details tracker for all mapped points */}
           <div className="bg-slate-900/10 p-3 rounded-lg border border-slate-800/60 text-[10px] text-gray-400 flex flex-col gap-1.5">
-            <span className="font-bold text-slate-300 uppercase tracking-wider text-[9px]">Mappings Mapped: ({Object.keys(mappedPixels).length}/13)</span>
+            <span className="font-bold text-slate-350 uppercase tracking-wider text-[9px]">Mappings Mapped: ({Object.keys(mappedPixels).length}/13)</span>
             <div className="flex flex-col gap-1 max-h-[140px] overflow-y-auto pr-1 scrollbar-thin">
               {LANDMARKS.map((lm, idx) => {
                 const px = mappedPixels[lm.id];
                 return (
-                  <div key={lm.id} className="flex justify-between text-slate-500 font-mono text-[9px]">
-                    <span className={px ? 'text-slate-300' : 'text-slate-600'}>{idx + 1}. {lm.name}:</span>
-                    <span className={px ? 'text-emerald-400 font-bold' : 'text-slate-600'}>
+                  <div key={lm.id} className="flex justify-between text-slate-505 font-mono text-[9px]">
+                    <span className={px ? 'text-slate-305 hover:text-white cursor-pointer' : 'text-slate-600'} onClick={() => setActiveLandmarkId(lm.id)}>{idx + 1}. {lm.name}:</span>
+                    <span className={px ? 'text-emerald-404 font-bold' : 'text-slate-600'}>
                       {px ? `[${px[0].toFixed(0)}, ${px[1].toFixed(0)}]` : 'Unmapped'}
                     </span>
                   </div>
                 );
               })}
             </div>
-          </div>
-
-        </div>
-
-      </div>
-    );
-  };
-
-  return (
-    <>
-      {/* Standard embedded panel mode */}
-      {!isStudioOpen && (
-        <div className="flex flex-col gap-6 p-6 glass rounded-2xl shadow-2xl relative overflow-hidden border border-[#ffffff08]">
-          
-          {/* Calibration Header */}
-          <div className="flex justify-between items-center border-b border-[#ffffff10] pb-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
-                <Camera className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-xl font-bold tracking-tight text-white">Manual Field Calibration (30m x 16m)</h3>
-                <p className="text-xs text-gray-400">Visually choose corners or markings on the 2D Pitch Sidebar, then click on the video feed to map</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3">
-              {/* Fullscreen Studio Trigger */}
+            
+            {/* Compute/Calibrate button */}
+            {imagePoints.length >= 4 && (
               <button
-                onClick={() => {
-                  setIsStudioOpen(true);
-                  resetViewTransform();
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600/10 hover:bg-amber-600/20 text-amber-400 border border-amber-500/25 rounded-lg text-xs font-bold transition cursor-pointer"
+                type="button"
+                onClick={recalculateLiveHomography}
+                className="w-full flex items-center justify-center gap-1.5 py-2 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-emerald-950/20 active:scale-[0.98] cursor-pointer mt-2"
               >
-                <Maximize2 className="w-3.5 h-3.5" />
-                <span>Enter Fullscreen Studio</span>
+                <Grid className="w-3.5 h-3.5" />
+                <span>Compute Calibration</span>
               </button>
-
-              {/* RMSE Badge */}
-              {rmse !== null ? (
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
-                  <CheckCircle className="w-3.5 h-3.5" />
-                  <span>RMSE: {rmse.toFixed(3)}m</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 text-slate-400 rounded-lg text-xs font-semibold border border-slate-700/20">
-                  <Target className="w-3.5 h-3.5" />
-                  <span>Map ≥ 4 points</span>
-                </div>
-              )}
-            </div>
+            )}
           </div>
 
-          {/* Render standard layout view inline */}
-          {renderWorkspaceLayout()}
+          {/* Lens distortion settings inside the studio sidebar */}
+          <div className="bg-slate-900/30 p-3 rounded-xl border border-slate-850 flex flex-col gap-3 mt-4 text-[11px] text-slate-400">
+            <span className="font-bold text-slate-350 uppercase tracking-wider text-[9px] flex items-center gap-1">
+              <Settings className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Lens Distortion (Brown-Conrady)</span>
+            </span>
 
-          {/* Intrinsic parameters sliders */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-950/20 p-4 rounded-xl border border-slate-800">
-            <div className="flex flex-col gap-1 md:col-span-3 pb-2 border-b border-[#ffffff08]">
-              <div className="flex items-center gap-1.5 text-sm font-semibold text-slate-300">
-                <Settings className="w-4 h-4 text-emerald-400" />
-                <span>Focal Length & Distortion Coefficients (Brown-Conrady Lens Undistortion)</span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-bold text-slate-400 flex items-center justify-between">
-                <span>Focal Length (fx / fy)</span>
-                <span className="text-emerald-400 font-mono text-[10px]">{lens.fx} px</span>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-slate-400 flex justify-between font-semibold">
+                <span>Focal Length</span>
+                <span className="text-emerald-404 font-mono text-[10px]">{lens.fx} px</span>
               </span>
               <input
                 type="range"
@@ -864,12 +845,12 @@ export default function CalibrationPanel({
               />
             </div>
 
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-bold text-slate-400 flex items-center justify-between">
-                <span>Principal Point Offset (cx / cy)</span>
-                <span className="text-emerald-400 font-mono text-[10px]">{lens.cx}px, {lens.cy}px</span>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-slate-400 flex justify-between font-semibold">
+                <span>Principal Point (cx / cy)</span>
+                <span className="text-emerald-404 font-mono text-[10px]">{lens.cx}px, {lens.cy}px</span>
               </span>
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <input
                   type="range"
                   min="0"
@@ -895,12 +876,12 @@ export default function CalibrationPanel({
               </div>
             </div>
 
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-bold text-slate-400 flex items-center justify-between">
-                <span>Radial Distortions (k1 / k2)</span>
-                <span className="text-emerald-400 font-mono text-[10px]">{lens.k1.toFixed(3)}, {lens.k2.toFixed(3)}</span>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-slate-400 flex justify-between font-semibold">
+                <span>Radial Distortion (k1 / k2)</span>
+                <span className="text-emerald-404 font-mono text-[10px]">{lens.k1.toFixed(3)}, {lens.k2.toFixed(3)}</span>
               </span>
-              <div className="flex gap-2">
+              <div className="flex gap-1.5">
                 <input
                   type="range"
                   min="-0.5"
@@ -928,6 +909,77 @@ export default function CalibrationPanel({
           </div>
 
         </div>
+      </div>
+    );
+  };
+
+  const adjustZoom = (amount: number) => {
+    setZoom(prev => {
+      const next = Math.max(1.0, Math.min(8.0, prev + amount));
+      if (next === 1.0) {
+        setPanX(0);
+        setPanY(0);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <>
+      {/* Standard embedded panel mode - minimalist dashboard summary card only */}
+      {!isStudioOpen && (
+        <div className="flex flex-col gap-6 p-6 glass rounded-2xl shadow-2xl relative overflow-hidden border border-[#ffffff08]">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg">
+                <Camera className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-xl font-bold tracking-tight text-white">Camera & Pitch Calibration</h3>
+                <p className="text-xs text-gray-400">Map pitch landmarks on the video feed to project player coordinates</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {rmse !== null ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>Calibrated (RMSE: {rmse.toFixed(3)}m)</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 text-amber-400 rounded-lg text-xs font-semibold border border-amber-500/25">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>Not Calibrated</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-slate-950/20 p-4 rounded-xl border border-slate-800">
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-bold text-slate-300">
+                {Object.keys(mappedPixels).length === 0 
+                  ? "No landmarks have been mapped yet." 
+                  : `${Object.keys(mappedPixels).length} landmark(s) mapped on raw video.`
+                }
+              </span>
+              <span className="text-[10px] text-gray-500">
+                Requires at least 4 matched keypoints (corners/lines) to calculate the perspective homography.
+              </span>
+            </div>
+
+            <button
+              onClick={() => {
+                setIsStudioOpen(true);
+                resetViewTransform();
+              }}
+              className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-xl text-xs font-extrabold uppercase tracking-wider transition shadow-lg shadow-amber-950/20 cursor-pointer active:scale-95 shrink-0"
+            >
+              <Maximize2 className="w-4 h-4" />
+              <span>Open Calibration Studio</span>
+            </button>
+          </div>
+        </div>
       )}
 
       {/* IMMERSIVE FULL-SCREEN / PRECISION OVERLAY STUDIO VIEW */}
@@ -945,37 +997,61 @@ export default function CalibrationPanel({
                   Precision Calibration Studio (30m x 16m Pitch)
                   <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 text-[10px] rounded border border-emerald-500/20 font-mono font-bold">Zoom & Pan Active</span>
                 </h3>
-                <p className="text-xs text-gray-400">Zoom in up to 600% and pan around the frame to place corners or markings with pixel-perfect precision</p>
+                <p className="text-xs text-gray-400">Zoom in up to 800% and pan around the frame to place corners or markings with pixel-perfect precision</p>
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              {/* Cancel / Exit button */}
+              <button
+                onClick={() => setIsStudioOpen(false)}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-350 border border-slate-800 rounded-xl text-xs font-bold transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+                <span>Cancel & Close</span>
+              </button>
+
+              {/* Live grid overlay toggle */}
+              {imagePoints.length >= 4 && (
+                <button
+                  onClick={() => setShowGridOverlay(!showGridOverlay)}
+                  className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                    showGridOverlay 
+                      ? 'bg-emerald-600/15 border-emerald-500/40 text-emerald-400' 
+                      : 'bg-slate-900 border-[#ffffff0a] text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Grid className="w-4 h-4" />
+                  <span>Grid Overlay</span>
+                </button>
+              )}
+
               {/* Precision Badge */}
               {rmse !== null && (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 rounded-lg text-xs font-semibold">
+                <div className="flex items-center gap-2 px-3 py-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 rounded-lg text-xs font-semibold">
                   <CheckCircle className="w-4 h-4" />
-                  <span>Reprojection RMSE: {rmse.toFixed(3)}m (High Accuracy)</span>
+                  <span>RMSE: {rmse.toFixed(3)}m</span>
                 </div>
               )}
 
               {/* Save & Exit Button */}
               <button
-                onClick={() => setIsStudioOpen(false)}
-                disabled={Object.keys(mappedPixels).length < 4}
-                className={`flex items-center gap-1.5 px-5 py-3 rounded-xl font-bold transition shadow-lg ${
-                  Object.keys(mappedPixels).length >= 4
+                onClick={applyAndSaveCalibration}
+                disabled={imagePoints.length < 4}
+                className={`flex items-center gap-1.5 px-5 py-2.5 rounded-xl font-bold transition shadow-lg ${
+                  imagePoints.length >= 4
                     ? 'bg-gradient-to-r from-emerald-600 to-[#2d6a4f] hover:from-emerald-500 hover:to-[#40916c] text-white cursor-pointer shadow-emerald-950/20 shadow-lg'
                     : 'bg-slate-900 border border-[#ffffff05] text-slate-500 cursor-not-allowed'
                 }`}
               >
-                <Minimize2 className="w-4 h-4" />
-                <span>Apply Calibration & Exit Studio</span>
+                <CheckCircle className="w-4 h-4" />
+                <span>Save & Exit</span>
               </button>
             </div>
           </div>
 
           {/* Subframe instructions */}
-          {Object.keys(mappedPixels).length < 4 && (
+          {imagePoints.length < 4 && (
             <div className="mb-4 p-3 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-xl text-xs flex items-center gap-2 relative z-30 font-semibold animate-pulse">
               <AlertTriangle className="w-4 h-4 flex-shrink-0" />
               <span>Map at least 4 point correspondences to enable calibration matrix homography output before exiting.</span>
