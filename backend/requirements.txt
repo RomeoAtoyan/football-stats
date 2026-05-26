@@ -1,0 +1,9 @@
+fastapi==0.110.0
+uvicorn==0.28.0
+numpy==1.26.4
+opencv-python==4.9.0.80
+torch==2.7.0
+torchvision==0.20.0
+sam3 @ git+https://github.com/facebookresearch/sam3.git
+pydantic==2.6.4
+websockets==12.0
